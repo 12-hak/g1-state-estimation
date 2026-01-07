@@ -20,15 +20,16 @@ link_directories(${UNITREE_SDK2_PATH}/lib)
 file(GLOB SOURCES "src/*.cpp")
 
 # Executable
-add_executable(g1_state_estimator ${SOURCES})
+add_executable(g1_state_estimator src/main.cpp src/UnitreeInterface.cpp src/StateEstimator.cpp src/G1Kinematics.cpp)
+target_link_libraries(g1_state_estimator PRIVATE unitree_sdk2 pthread)
 
-# Linking
-target_link_libraries(g1_state_estimator 
-    unitree_sdk2 
+# Mock Test
+add_executable(mock_test tests/mock_test.cpp src/StateEstimator.cpp src/G1Kinematics.cpp)
+target_link_libraries(mock_test PRIVATE
+    pthread
     # ${realsense2_LIBRARY}
     # livox_sdk2_static
     # Eigen3::Eigen
-    pthread
 )
 
 # Install Instructions (optional)

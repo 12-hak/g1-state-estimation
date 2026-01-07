@@ -12,6 +12,7 @@ struct RobotState {
     Eigen::Vector3d velocity;
     Eigen::Vector3d angular_velocity;
     Eigen::Vector3d linear_acceleration;
+    Eigen::Vector3d grav_vector; // New: Projected gravity [0, 0, -1] in body frame
     
     // Joints
     std::array<float, 35> q;

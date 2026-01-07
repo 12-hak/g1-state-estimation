@@ -79,6 +79,10 @@ void StateEstimator::update_imu(const std::array<float, 4>& quat,
     x_hat_ = A_ * x_hat_ + B_ * a_world;
     P_ = A_ * P_ * A_.transpose() + Q_;
     
+    // PROJECTED GRAVITY (Important for Policies)
+    // g_body = R.transpose() * g_world_unit
+    state_.grav_vector = state_.orientation.inverse() * Eigen::Vector3d(0, 0, -1.0);
+
     // Store for retrieval
     state_.position = x_hat_.head<3>();
     state_.velocity = x_hat_.tail<3>();

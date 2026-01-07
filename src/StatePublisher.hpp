@@ -14,6 +14,7 @@ struct PolicyInput {
     double orientation[4]; // w, x, y, z
     double velocity[3];
     double angular_velocity[3];
+    double grav_vector[3]; // New
     double q[35];
     double dq[35];
 };
@@ -70,6 +71,10 @@ public:
         ptr_->angular_velocity[0] = state.angular_velocity[0];
         ptr_->angular_velocity[1] = state.angular_velocity[1];
         ptr_->angular_velocity[2] = state.angular_velocity[2];
+
+        ptr_->grav_vector[0] = state.grav_vector[0];
+        ptr_->grav_vector[1] = state.grav_vector[1];
+        ptr_->grav_vector[2] = state.grav_vector[2];
 
         // Copy Joints
         for(int i=0; i<35; ++i) {
