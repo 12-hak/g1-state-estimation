@@ -1,0 +1,10 @@
+build/
+bin/
+*.o
+*.a
+*.so
+.vscode/
+.DS_Store
+unitree_sdk2/
+thirdparty/eigen/
+g1_state_estimator
