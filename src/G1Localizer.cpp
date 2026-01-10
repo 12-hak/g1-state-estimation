@@ -3,6 +3,8 @@
 #include <cmath>
 #include <iostream>
 #include <algorithm>
+#include <fstream>
+#include <map>
 #include "ScanMatcher.hpp"
 
 using namespace unitree::robot;
@@ -54,11 +56,14 @@ void G1Localizer::start() {
     running_ = true;
     livox_->initialize();
     localization_thread_ = std::thread(&G1Localizer::localizationLoop, this);
+    mapping_thread_ = std::thread(&G1Localizer::mappingThreadLoop, this);
+    std::cout << "[G1Localizer] Localization + Mapping threads started" << std::endl;
 }
 
 void G1Localizer::stop() {
     running_ = false;
     if (localization_thread_.joinable()) localization_thread_.join();
+    if (mapping_thread_.joinable()) mapping_thread_.join();
     livox_->uninitialize();
 }
 
@@ -224,6 +229,23 @@ void G1Localizer::localizationLoop() {
             // Reduced to 0.2m for richer map building
             if (global_map_.empty() || (dist_moved > 0.2f && state_.icp_valid)) {
                 
+                // === 3D MAPPING: Push to mapping thread (Non-Blocking) ===
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    latest_scan_3d_ = points_3d;  // Store full 3D scan
+                }
+                
+                MappingData mapping_data;
+                mapping_data.position = base_pos;
+                mapping_data.orientation = q;
+                mapping_data.scan_3d = points_3d;  // Deep copy
+                mapping_data.timestamp_us = state_.timestamp_us;
+                
+                if (!tryPushMappingData(mapping_data)) {
+                    // Queue full - frame dropped (expected behavior for leaky queue)
+                }
+                // === END 3D MAPPING ===
+                
                 // ... (Coordinate transform omitted, keeping existing logic) ...
                 // Re-calculating new_world_points logic is inside the block...
                 // I need to target the threshold line specifically or include the block.
@@ -355,3 +377,113 @@ LocalizationState G1Localizer::getState() const {
 }
 
 } // namespace g1_localization
+
+bool G1Localizer::tryPushMappingData(const MappingData& data) {
+    std::lock_guard<std::mutex> lock(mapping_queue_mutex_);
+    
+    // Leaky Queue: Drop if full (never block localization)
+    if (mapping_queue_.size() >= MAX_MAPPING_QUEUE_SIZE) {
+        return false;  // Drop frame
+    }
+    
+    mapping_queue_.push(data);
+    return true;
+}
+
+void G1Localizer::mappingThreadLoop() {
+    std::cout << "[G1Mapper] Thread started" << std::endl;
+    
+    // Global 3D Map (Simple Voxel Grid)
+    struct VoxelKey {
+        int x, y, z;
+        bool operator<(const VoxelKey& other) const {
+            if (x != other.x) return x < other.x;
+            if (y != other.y) return y < other.y;
+            return z < other.z;
+        }
+    };
+    
+    std::map<VoxelKey, Eigen::Vector3f> global_map_3d;
+    const float voxel_size = 0.05f;  // 5cm voxels
+    
+    auto voxelize = [&](const Eigen::Vector3f& pt) -> VoxelKey {
+        return {
+            static_cast<int>(std::floor(pt.x() / voxel_size)),
+            static_cast<int>(std::floor(pt.y() / voxel_size)),
+            static_cast<int>(std::floor(pt.z() / voxel_size))
+        };
+    };
+    
+    size_t total_scans_processed = 0;
+    auto last_save = std::chrono::steady_clock::now();
+    
+    while (running_) {
+        MappingData data;
+        bool has_data = false;
+        
+        // Pop from queue (non-blocking)
+        {
+            std::lock_guard<std::mutex> lock(mapping_queue_mutex_);
+            if (!mapping_queue_.empty()) {
+                data = std::move(mapping_queue_.front());
+                mapping_queue_.pop();
+                has_data = true;
+            }
+        }
+        
+        if (!has_data) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        
+        // Transform scan to world frame
+        Eigen::Matrix3f R = data.orientation.toRotationMatrix();
+        for (const auto& pt_local : data.scan_3d) {
+            Eigen::Vector3f pt_world = R * pt_local + data.position;
+            
+            // Add to voxel grid
+            VoxelKey key = voxelize(pt_world);
+            global_map_3d[key] = pt_world;  // Overwrite (keeps latest)
+        }
+        
+        total_scans_processed++;
+        
+        // Periodic save (every 10 seconds)
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_save).count() >= 10) {
+            std::cout << "[G1Mapper] Scans: " << total_scans_processed 
+                      << ", Map Points: " << global_map_3d.size() << std::endl;
+            
+            // Save to PCD file
+            std::string filename = "map_3d.pcd";
+            std::ofstream file(filename);
+            if (file.is_open()) {
+                // PCD Header
+                file << "# .PCD v0.7 - Point Cloud Data file format\n";
+                file << "VERSION 0.7\n";
+                file << "FIELDS x y z\n";
+                file << "SIZE 4 4 4\n";
+                file << "TYPE F F F\n";
+                file << "COUNT 1 1 1\n";
+                file << "WIDTH " << global_map_3d.size() << "\n";
+                file << "HEIGHT 1\n";
+                file << "VIEWPOINT 0 0 0 1 0 0 0\n";
+                file << "POINTS " << global_map_3d.size() << "\n";
+                file << "DATA ascii\n";
+                
+                // Points
+                for (const auto& [key, pt] : global_map_3d) {
+                    file << pt.x() << " " << pt.y() << " " << pt.z() << "\n";
+                }
+                
+                file.close();
+                std::cout << "[G1Mapper] Saved " << filename << std::endl;
+            }
+            
+            last_save = now;
+        }
+    }
+    
+    std::cout << "[G1Mapper] Thread stopped. Final map size: " << global_map_3d.size() << std::endl;
+}
+
