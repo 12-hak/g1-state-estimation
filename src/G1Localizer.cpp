@@ -230,16 +230,18 @@ void G1Localizer::localizationLoop() {
             if (global_map_.empty() || (dist_moved > 0.2f && state_.icp_valid)) {
                 
                 // === 3D MAPPING: Push to mapping thread (Non-Blocking) ===
+                uint64_t timestamp_snapshot;
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
                     latest_scan_3d_ = points_3d;  // Store full 3D scan
+                    timestamp_snapshot = state_.timestamp_us;
                 }
                 
                 MappingData mapping_data;
                 mapping_data.position = base_pos;
                 mapping_data.orientation = q;
                 mapping_data.scan_3d = points_3d;  // Deep copy
-                mapping_data.timestamp_us = state_.timestamp_us;
+                mapping_data.timestamp_us = timestamp_snapshot;
                 
                 if (!tryPushMappingData(mapping_data)) {
                     // Queue full - frame dropped (expected behavior for leaky queue)
