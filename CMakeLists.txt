@@ -1,36 +1,86 @@
 cmake_minimum_required(VERSION 3.10)
-project(g1_state_estimator)
+project(g1_localization)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE Release)
 
-# Dependencies
-# find_package(Eigen3 REQUIRED) # System Eigen
-set(EIGEN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/thirdparty/eigen")
-include_directories(${EIGEN3_INCLUDE_DIR})
+# Optimization flags
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
 
-find_package(realsense2 QUIET) # Optional on Windows build if not installed
-# find_package(livox_sdk2 REQUIRED) 
+# Find Eigen3 (try multiple methods)
+find_package(Eigen3 QUIET)
+if(NOT Eigen3_FOUND)
+    # Try pkg-config
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(EIGEN3 QUIET eigen3)
+    endif()
+    
+    # Fallback to common install locations
+    if(NOT EIGEN3_FOUND)
+        set(EIGEN3_INCLUDE_DIR "/usr/include/eigen3" "/usr/local/include/eigen3")
+        message(STATUS "Using fallback Eigen3 path: ${EIGEN3_INCLUDE_DIR}")
+    endif()
+else()
+    set(EIGEN3_INCLUDE_DIR ${EIGEN3_INCLUDE_DIR})
+endif()
 
-# Unitree SDK2 Integration
-set(UNITREE_SDK2_PATH "${CMAKE_SOURCE_DIR}/unitree_sdk2")
-include_directories(${UNITREE_SDK2_PATH}/include)
-link_directories(${UNITREE_SDK2_PATH}/lib)
+# Unitree SDK2
+set(UNITREE_SDK_PATH "/home/unitree/development/unitree_sdk2")
+message(STATUS "Using Unitree SDK2 path: ${UNITREE_SDK_PATH}")
+include_directories(${UNITREE_SDK_PATH}/include)
+link_directories(${UNITREE_SDK_PATH}/lib)
 
-# Source Files
-file(GLOB SOURCES "src/*.cpp")
+# CycloneDDS (from Unitree Robotics)
+set(CYCLONEDDS_PATH "/opt/unitree_robotics")
+message(STATUS "Using CycloneDDS path: ${CYCLONEDDS_PATH}")
+include_directories(${CYCLONEDDS_PATH}/include)
+include_directories(${CYCLONEDDS_PATH}/include/ddscxx)
+include_directories(${CYCLONEDDS_PATH}/include/ddsc)
+link_directories(${CYCLONEDDS_PATH}/lib)
 
-# Executable
-add_executable(g1_state_estimator src/main.cpp src/UnitreeInterface.cpp src/StateEstimator.cpp src/G1Kinematics.cpp)
-target_link_libraries(g1_state_estimator PRIVATE unitree_sdk2 pthread)
-
-# Mock Test
-add_executable(mock_test tests/mock_test.cpp src/StateEstimator.cpp src/G1Kinematics.cpp)
-target_link_libraries(mock_test PRIVATE
-    pthread
-    # ${realsense2_LIBRARY}
-    # livox_sdk2_static
-    # Eigen3::Eigen
+# Include directories
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${EIGEN3_INCLUDE_DIR}
 )
 
-# Install Instructions (optional)
-# install(TARGETS g1_state_estimator DESTINATION bin)
+# Source files
+set(SOURCES
+    src/ICP2D.cpp
+    src/ScanMatcher.cpp
+    src/LivoxInterface.cpp
+    src/UDPPublisher.cpp
+    src/G1Localizer.cpp
+)
+
+# Library
+add_library(g1_localization_lib SHARED ${SOURCES})
+target_link_libraries(g1_localization_lib
+    unitree_sdk2
+    ddsc
+    ddscxx
+    pthread
+)
+
+# Executable
+add_executable(g1_localization_node src/g1_localization_node.cpp)
+target_link_libraries(g1_localization_node
+    g1_localization_lib
+)
+
+# Install
+install(TARGETS g1_localization_node g1_localization_lib
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+)
+
+install(FILES
+    src/ICP2D.hpp
+    src/ScanMatcher.hpp
+    src/G1Localizer.hpp
+    src/LivoxInterface.hpp
+    src/UDPPublisher.hpp
+    DESTINATION include/g1_localization
+)
