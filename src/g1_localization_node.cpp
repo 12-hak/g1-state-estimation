@@ -48,12 +48,14 @@ int main(int argc, char** argv) {
             if (duration.count() >= 1) {
                 auto state = localizer.getState();
                 
+                /*
                 std::cout << "[State] "
                           << "Pos: (" << state.position.x() << ", " << state.position.y() << ", " << state.position.z() << ") "
                           << "Vel: (" << state.velocity.x() << ", " << state.velocity.y() << ") "
                           << "ICP: " << (state.icp_valid ? "OK" : "FAIL") << " "
                           << "Err: " << state.icp_error
                           << std::endl;
+                */
                 
                 last_print = now;
             }

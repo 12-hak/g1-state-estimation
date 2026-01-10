@@ -4,11 +4,7 @@
 
 namespace g1_localization {
 
-LivoxInterface::LivoxInterface() 
-    : running_(false)
-    , socket_fd_(-1)
-    , port_(56300) {
-}
+LivoxInterface::LivoxInterface() : running_(false) {}
 
 LivoxInterface::~LivoxInterface() {
     uninitialize();
@@ -17,53 +13,24 @@ LivoxInterface::~LivoxInterface() {
 void LivoxInterface::initialize() {
     if (running_) return;
     
-    // Create UDP socket for Livox data
-    socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (socket_fd_ < 0) {
-        std::cerr << "[LivoxInterface] Failed to create socket" << std::endl;
+    // Initialize Livox SDK
+    // Assumes config file in current directory
+    if (!LivoxLidarSdkInit("g1_mid360_config.json")) {
+        std::cerr << "[LivoxInterface] ERROR: Livox SDK Init Failed. Check config file!" << std::endl;
         return;
     }
     
-    // Bind to Livox port
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port_);
-    
-    if (bind(socket_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "[LivoxInterface] Failed to bind to port " << port_ << std::endl;
-        close(socket_fd_);
-        socket_fd_ = -1;
-        return;
-    }
-    
-    // Set socket timeout
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100000;  // 100ms
-    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    SetLivoxLidarInfoChangeCallback(LidarInfoChangeCallback, this);
+    SetLivoxLidarPointCloudCallBack(PointCloudCallback, this);
     
     running_ = true;
-    receiver_thread_ = std::thread(&LivoxInterface::receiveLoop, this);
-    
-    std::cout << "[LivoxInterface] Initialized on port " << port_ << std::endl;
+    std::cout << "[LivoxInterface] SDK Initialized." << std::endl;
 }
 
 void LivoxInterface::uninitialize() {
     if (!running_) return;
-    
     running_ = false;
-    
-    if (receiver_thread_.joinable()) {
-        receiver_thread_.join();
-    }
-    
-    if (socket_fd_ >= 0) {
-        close(socket_fd_);
-        socket_fd_ = -1;
-    }
-    
+    LivoxLidarSdkUninit();
     std::cout << "[LivoxInterface] Uninitialized" << std::endl;
 }
 
@@ -74,75 +41,50 @@ std::vector<Eigen::Vector3f> LivoxInterface::getLatestPointCloud() {
     return points;
 }
 
-void LivoxInterface::receiveLoop() {
-    uint8_t buffer[2048];
+void LivoxInterface::processPoint(float x, float y, float z) {
+    std::lock_guard<std::mutex> lock(points_mutex_);
+    // Keep buffer manageable
+    if (points_buffer_.size() >= 5000) return; 
     
-    while (running_) {
-        ssize_t received = recv(socket_fd_, buffer, sizeof(buffer), 0);
-        
-        if (received < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;  // Timeout, try again
-            }
-            break;
+    // Convert mm to meters and apply basic transform (Upside Down Mount)
+    points_buffer_.emplace_back(x / 1000.0f, -y / 1000.0f, -z / 1000.0f);
+}
+
+// ---------------- STATIC CALLBACKS ---------------- //
+
+void LivoxInterface::WorkModeCallback(livox_status status, uint32_t handle,
+                                      LivoxLidarAsyncControlResponse *response, void *client_data) {
+    if (response != nullptr && response->ret_code == 0) {
+        std::cout << "[LivoxInterface] LiDAR set to NORMAL mode (Streaming)" << std::endl;
+    } else {
+        std::cerr << "[LivoxInterface] WARNING: Failed to set Work Mode!" << std::endl;
+    }
+}
+
+void LivoxInterface::LidarInfoChangeCallback(const uint32_t handle, const LivoxLidarInfo* info, void* client_data) {
+    if (info == nullptr) return;
+    std::cout << "[LivoxInterface] Connected: " << info->sn << " IP: " << info->lidar_ip << std::endl;
+    
+    // Auto-Start Streaming
+    SetLivoxLidarWorkMode(handle, kLivoxLidarNormal, WorkModeCallback, nullptr);
+}
+
+void LivoxInterface::PointCloudCallback(uint32_t handle, const uint8_t dev_type,
+                                        LivoxLidarEthernetPacket* data, void* client_data) {
+    LivoxInterface* self = static_cast<LivoxInterface*>(client_data);
+    if (!self || !data) return;
+
+    if (data->data_type == kLivoxLidarCartesianCoordinateHighData) {
+        LivoxLidarCartesianHighRawPoint *points = (LivoxLidarCartesianHighRawPoint *)data->data;
+        for (int i = 0; i < data->dot_num; i++) {
+            if (points[i].x == 0 && points[i].y == 0 && points[i].z == 0) continue;
+            self->processPoint(points[i].x, points[i].y, points[i].z);
         }
-        
-        if (received < 24) continue;  // Too small for Livox packet
-        
-        // Parse Livox packet
-        // Header: version(1) + slot(1) + id(1) + reserved(1) + err_code(4) + 
-        //         timestamp_type(1) + data_type(1) + timestamp(8) + length(4)
-        
-        uint8_t data_type = buffer[9];
-        uint32_t length = *reinterpret_cast<uint32_t*>(&buffer[18]);
-        
-        if (received < 24 + length) continue;
-        
-        std::vector<Eigen::Vector3f> new_points;
-        
-        if (data_type == 0) {
-            // Cartesian coordinate format (x, y, z, reflectivity)
-            int num_points = length / 13;
-            for (int i = 0; i < num_points; ++i) {
-                int offset = 24 + i * 13;
-                int32_t x = *reinterpret_cast<int32_t*>(&buffer[offset]);
-                int32_t y = *reinterpret_cast<int32_t*>(&buffer[offset + 4]);
-                int32_t z = *reinterpret_cast<int32_t*>(&buffer[offset + 8]);
-                
-                // Convert from mm to meters
-                // UPSIDE DOWN MOUNT: X is forward, Y is flipped, Z is flipped
-                new_points.emplace_back(
-                    x / 1000.0f,
-                   -y / 1000.0f, // Flip Y: Left becomes Right
-                   -z / 1000.0f  // Flip Z: Up becomes Down
-                );
-            }
-        } else if (data_type == 1) {
-            // High performance format (x, y, z, reflectivity, tag)
-            int num_points = length / 14;
-            for (int i = 0; i < num_points; ++i) {
-                int offset = 24 + i * 14;
-                int32_t x = *reinterpret_cast<int32_t*>(&buffer[offset]);
-                int32_t y = *reinterpret_cast<int32_t*>(&buffer[offset + 4]);
-                int32_t z = *reinterpret_cast<int32_t*>(&buffer[offset + 8]);
-                
-                new_points.emplace_back(
-                    x / 1000.0f,
-                   -y / 1000.0f, // Flip Y
-                   -z / 1000.0f  // Flip Z
-                );
-            }
-        }
-        
-        if (!new_points.empty()) {
-            std::lock_guard<std::mutex> lock(points_mutex_);
-            points_buffer_.insert(points_buffer_.end(), new_points.begin(), new_points.end());
-            
-            // Keep buffer size manageable
-            if (points_buffer_.size() > 5000) {
-                points_buffer_.erase(points_buffer_.begin(), 
-                                    points_buffer_.begin() + (points_buffer_.size() - 5000));
-            }
+    } else if (data->data_type == kLivoxLidarCartesianCoordinateLowData) {
+        LivoxLidarCartesianLowRawPoint *points = (LivoxLidarCartesianLowRawPoint *)data->data;
+        for (int i = 0; i < data->dot_num; i++) {
+            if (points[i].x == 0 && points[i].y == 0 && points[i].z == 0) continue;
+            self->processPoint(points[i].x, points[i].y, points[i].z);
         }
     }
 }

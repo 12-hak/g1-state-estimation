@@ -5,9 +5,8 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
+#include "livox_lidar_def.h"
+#include "livox_lidar_api.h"
 
 namespace g1_localization {
 
@@ -21,17 +20,18 @@ public:
     
     std::vector<Eigen::Vector3f> getLatestPointCloud();
     
+    // SDK Callbacks (must be static or friend)
+    static void PointCloudCallback(uint32_t handle, const uint8_t dev_type, LivoxLidarEthernetPacket* data, void* client_data);
+    static void WorkModeCallback(livox_status status, uint32_t handle, LivoxLidarAsyncControlResponse *response, void *client_data);
+    static void LidarInfoChangeCallback(const uint32_t handle, const LivoxLidarInfo* info, void* client_data);
+
 private:
-    void receiveLoop();
-    
+    void processPoint(float x, float y, float z);
+
     std::atomic<bool> running_;
-    int socket_fd_;
-    uint16_t port_;
     
     std::vector<Eigen::Vector3f> points_buffer_;
     std::mutex points_mutex_;
-    
-    std::thread receiver_thread_;
 };
 
 } // namespace g1_localization

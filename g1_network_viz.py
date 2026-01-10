@@ -154,7 +154,9 @@ class G1NetworkVisualizer:
         # Create checkerboard grid of boxes
         tile_size = 0.5  # 0.5m tiles
         grid_range = 20  # +/- 20 tiles = 40x40 = 20m x 20m area
-
+        
+        # REMOVED FLOOR TO SEE DOTS CLEARLY
+        '''
         for i in range(-grid_range, grid_range + 1):
             for j in range(-grid_range, grid_range + 1):
                 tile = spec.worldbody.add_geom()
@@ -168,6 +170,7 @@ class G1NetworkVisualizer:
                     tile.material = "floor_light"
                 else:
                     tile.material = "floor_dark"
+        '''
 
         # Compile the model
         self.model = spec.compile()
@@ -223,7 +226,8 @@ class G1NetworkVisualizer:
         """Background thread to receive UDP packets."""
         while self.running:
             try:
-                data, addr = self.sock.recvfrom(4096)
+                # Buffer increased to 1MB to handle large PointCloud/Map packets
+                data, addr = self.sock.recvfrom(1024 * 1024) 
                 self._parse_packet(data)
             except socket.timeout:
                 continue
@@ -399,8 +403,15 @@ class G1NetworkVisualizer:
         with self.state_lock:
             # Update base position from state estimation (X, Y ONLY)
             # Z will be computed by _ground_robot based on joint configuration
-            self.data.qpos[0] = self.position[0]
-            self.data.qpos[1] = self.position[1]
+            # Calculate Visual Position (Pivot) for stable rendering
+            yaw_approx = 2.0 * np.arctan2(self.imu_quaternion[3], self.imu_quaternion[0])
+            c, s = np.cos(yaw_approx), np.sin(yaw_approx)
+            R_yaw = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+            visual_offset = np.array([0.1, 0, 0])
+            visual_pos = self.position - R_yaw @ visual_offset
+
+            self.data.qpos[0] = visual_pos[0]
+            self.data.qpos[1] = visual_pos[1]
             # Don't set qpos[2] here - let _ground_robot compute it
 
             # Update joint positions FIRST (before grounding)
@@ -483,71 +494,84 @@ class G1NetworkVisualizer:
         # Reset geom counter for custom rendering
         viewer.user_scn.ngeom = 0
         
+        # Increase geom limit to handle large maps
+        if viewer.user_scn.maxgeom < 10000:
+            viewer.user_scn.maxgeom = 10000
+            viewer.user_scn.geoms = mujoco.MjvGeom(10000) # Re-allocate if needed (pseudo-code, python bindings handle resizing usually)
+            
+        # VISUAL CORRECTION: 
+        # The Math tracks the IMU. The Visuals should track the Pivot to kill the "Circle".
+        # We shift the visualized dots BACKWARD relative to the robot orientation.
+        # Pivot is ~0.2m BEHIND IMU (Heels).
+        # Green Dot = State_Pos - R_body * (0.2, 0, 0)
+        
+        # Quaternion is [w, x, y, z]
+        # Yaw Approx = 2 * atan2(z, w)
+        yaw = 2.0 * np.arctan2(self.imu_quaternion[3], self.imu_quaternion[0])
+        c, s = np.cos(yaw), np.sin(yaw)
+        R_yaw = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        
+        visual_offset = np.array([0.1, 0, 0]) 
+        visual_pos_green = self.position - R_yaw @ visual_offset
+        visual_pos_blue  = self.position_raw - R_yaw @ visual_offset
+        
         with self.state_lock:
             # Only render if we have V4 data (point_cloud exists)
-            # This prevents slowdown when using V3 packets
             if not hasattr(self, 'point_cloud'):
                 return
-                
-            # Render LiDAR point cloud as small red dots (limit to 50 for performance)
-            if len(self.point_cloud) > 0:
-                max_points = min(50, len(self.point_cloud))
-                for i in range(max_points):
-                    point = self.point_cloud[i]
-                    # Transform point from robot frame to world frame
-                    world_point = self.position + point
-                    
-                    if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
-                        break
-                        
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_SPHERE,
-                        np.array([0.01, 0, 0], dtype=np.float64),  # tiny size
-                        np.array(world_point, dtype=np.float64),
-                        np.eye(3, dtype=np.float64).flatten(),
-                        np.array([1, 0, 0, 0.8], dtype=np.float32)  # red
-                    )
-                    viewer.user_scn.ngeom += 1
             
-            # Render Reference Map points (White)
+            # --- RENDER MAP (White) ---
+            if hasattr(self, 'map_cloud'):
+                 # Debug Log (1Hz)
+                 if time.time() - getattr(self, '_last_map_debug', 0) > 1.0:
+                     print(f"DEBUG: Rendering Map Cloud. Points: {len(self.map_cloud)}")
+                     self._last_map_debug = time.time()
+
             if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
-                for i in range(min(100, len(self.map_cloud))):
-                    point = self.map_cloud[i]
+                # Decimate map based on size to keep FPS reasonable
+                # Target 2,000 points (Draw basically everything we receive)
+                step = max(1, len(self.map_cloud) // 2000) 
+                map_subset = self.map_cloud[::step]
+                
+                for point in map_subset:
                     if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
+                        print("Max Geom Exceeded (Map)!")
                         break
+                    
+                    # Project to Ground Plane (2D Map Style)
+                    viz_pt = np.array(point, dtype=np.float64)
+                    viz_pt[2] = 0.05 # Slight lift
+                    
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
                         mujoco.mjtGeom.mjGEOM_SPHERE,
-                        np.array([0.015, 0, 0], dtype=np.float64),
-                        np.array(point, dtype=np.float64),
+                        np.array([0.01, 0, 0], dtype=np.float64), # 1cm Dots (Visible)
+                        viz_pt,
                         np.eye(3, dtype=np.float64).flatten(),
-                        np.array([1, 1, 1, 0.5], dtype=np.float32)  # white, semi-transparent
+                        np.array([1, 1, 1, 1.0], dtype=np.float32)  # Opaque White
                     )
                     viewer.user_scn.ngeom += 1
             
-            # Render position markers (smaller spheres)
-            # Blue sphere for raw leg odometry
+            # --- RENDER MARKERS (Green/Blue) ---
             if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
                 mujoco.mjv_initGeom(
                     viewer.user_scn.geoms[viewer.user_scn.ngeom],
                     mujoco.mjtGeom.mjGEOM_SPHERE,
-                    np.array([0.05, 0, 0], dtype=np.float64),  # smaller size
-                    np.array([self.position_raw[0], self.position_raw[1], 0.05], dtype=np.float64),
+                    np.array([0.05, 0, 0], dtype=np.float64),
+                    np.array([visual_pos_blue[0], visual_pos_blue[1], 0.05], dtype=np.float64),
                     np.eye(3, dtype=np.float64).flatten(),
-                    np.array([0, 0, 1, 0.6], dtype=np.float32)  # blue, semi-transparent
+                    np.array([0, 0, 1, 0.6], dtype=np.float32)  # blue (Leg Odom)
                 )
                 viewer.user_scn.ngeom += 1
             
-            # Green sphere for ICP-corrected position
             if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
                 mujoco.mjv_initGeom(
                     viewer.user_scn.geoms[viewer.user_scn.ngeom],
                     mujoco.mjtGeom.mjGEOM_SPHERE,
-                    np.array([0.05, 0, 0], dtype=np.float64),  # smaller size
-                    np.array([self.position[0], self.position[1], 0.05], dtype=np.float64),
+                    np.array([0.05, 0, 0], dtype=np.float64),
+                    np.array([visual_pos_green[0], visual_pos_green[1], 0.05], dtype=np.float64),
                     np.eye(3, dtype=np.float64).flatten(),
-                    np.array([0, 1, 0, 0.6], dtype=np.float32)  # green, semi-transparent
+                    np.array([0, 1, 0, 0.6], dtype=np.float32)  # green (SLAM)
                 )
                 viewer.user_scn.ngeom += 1
 

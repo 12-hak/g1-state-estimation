@@ -33,6 +33,8 @@ public:
 
     void update_vision_pose(const Eigen::Vector3d& pos, const Eigen::Quaterniond& ori);
 
+    void update_lidar_pose(const Eigen::Vector3d& pos, const Eigen::Quaterniond& ori);
+
     RobotState get_state() const;
 
 private:

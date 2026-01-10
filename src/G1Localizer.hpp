@@ -98,6 +98,9 @@ private:
     // Parameters
     Eigen::Vector3f lidar_offset_;
     float step_scale_;
+    
+    // SLAM Correction (Drift fix)
+    Eigen::Vector3f slam_correction_;
     float position_alpha_;
     float velocity_alpha_;
     float slam_interval_;

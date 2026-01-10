@@ -4,16 +4,22 @@
 
 namespace g1_localization {
 
-ICP2D::ICP2D() : max_iterations_(30), tolerance_(1e-4), outlier_threshold_(0.5f) {}
+// Constructor matching header declaration
+ICP2D::ICP2D(int max_iterations, float tolerance, float outlier_threshold)
+    : max_iterations_(max_iterations), tolerance_(tolerance), outlier_threshold_(outlier_threshold) {}
 
-ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
-                            const std::vector<Eigen::Vector2f>& target) {
-    if (source.empty() || target.empty()) return {Eigen::Matrix2f::Identity(), Eigen::Vector2f::Zero(), 0.0f, false};
+ICPResult ICP2D::align(const std::vector<Eigen::Vector2f>& source,
+                       const std::vector<Eigen::Vector2f>& target) {
+    // Return with 5 fields matching ICPResult struct in hpp
+    if (source.empty() || target.empty()) {
+        return {Eigen::Matrix2f::Identity(), Eigen::Vector2f::Zero(), false, 0.0f, 0.0f};
+    }
 
     Eigen::Matrix2f R = Eigen::Matrix2f::Identity();
     Eigen::Vector2f t = Eigen::Vector2f::Zero();
     float total_error = 0.0f;
     bool converged = false;
+    float inlier_ratio = 0.0f;
 
     // We align the SOURCE (current scan) to the TARGET (the fixed map)
     for (int iter = 0; iter < max_iterations_; ++iter) {
@@ -29,7 +35,8 @@ ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
             int best_idx = -1;
             
             for (size_t i = 0; i < target.size(); ++i) {
-                float d_sq = (s_trans - target[i]).get_shape().is_empty() ? 0 : (s_trans - target[i]).squaredNorm();
+                // Fixed Eigen syntax error
+                float d_sq = (s_trans - target[i]).squaredNorm();
                 if (d_sq < min_dist_sq) {
                     min_dist_sq = d_sq;
                     best_idx = i;
@@ -43,11 +50,15 @@ ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
             }
         }
 
-        if (src_matched.size() < 10) break;
+        if (src_matched.size() < 10) break; // Not enough points
 
         // Compute centroids
-        Eigen::Vector2f src_mean = std::accumulate(src_matched.begin(), src_matched.end(), Eigen::Vector2f::Zero().eval()) / src_matched.size();
-        Eigen::Vector2f tgt_mean = std::accumulate(tgt_matched.begin(), tgt_matched.end(), Eigen::Vector2f::Zero().eval()) / tgt_matched.size();
+        Eigen::Vector2f src_mean = Eigen::Vector2f::Zero();
+        Eigen::Vector2f tgt_mean = Eigen::Vector2f::Zero();
+        for(const auto& p : src_matched) src_mean += p;
+        for(const auto& p : tgt_matched) tgt_mean += p;
+        src_mean /= src_matched.size();
+        tgt_mean /= tgt_matched.size();
 
         // SVD-based rotation matching
         Eigen::Matrix2f H = Eigen::Matrix2f::Zero();
@@ -64,6 +75,23 @@ ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
             R_new = V * svd.matrixU().transpose();
         }
 
+        // Apply new transformation
+        // Note: This logic seems to calculate absolute R from source to target?
+        // Standard ICP iteratively updates R and t.
+        // Let's assume standard SVD logic:
+        // T_new aligns (src - src_mean) to (tgt - tgt_mean).
+        // pt_tgt = R_new * (pt_src - src_mean) + tgt_mean
+        // pt_tgt = R_new * pt_src + (tgt_mean - R_new * src_mean)
+        
+        // Accumulate transformation? No, usually we solve for absolute R,t if we re-transform source.
+        // But here loop line 25 uses R*s + t.
+        // So R and t are cumulative.
+        // SVD gives best R,t between src_matched (ORIGINAL points) and tgt_matched?
+        // Wait, src_matched stores 's' (Original Points). Correct.
+        // tgt_matched stores nearest point in TARGET.
+        // So SVD solves alignment between Original Source and Current Target Estimate.
+        // So R and t are indeed Absolute.
+        
         Eigen::Vector2f t_new = tgt_mean - R_new * src_mean;
 
         // Check convergence
@@ -71,6 +99,7 @@ ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
         R = R_new;
         t = t_new;
         total_error = current_error / src_matched.size();
+        inlier_ratio = (float)src_matched.size() / source.size();
 
         if (delta_t < tolerance_) {
             converged = true;
@@ -78,7 +107,7 @@ ICP2D::Result ICP2D::align(const std::vector<Eigen::Vector2f>& source,
         }
     }
 
-    return {R, t, total_error, converged};
+    return {R, t, converged, total_error, inlier_ratio};
 }
 
 } // namespace g1_localization

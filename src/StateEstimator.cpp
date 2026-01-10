@@ -170,6 +170,16 @@ void StateEstimator::update_vision_pose(const Eigen::Vector3d& pos, const Eigen:
     // state_.orientation = state_.orientation.slerp(0.5, ori); // Example naive fusion
 }
 
+void StateEstimator::update_lidar_pose(const Eigen::Vector3d& pos, const Eigen::Quaterniond& ori) {
+    // Fuse LiDAR pose estimate
+    // For stabilization, correct position using LiDAR pointcloud localization
+    // Simple fusion: blend with current estimate
+    double alpha = 0.1; // Trust LiDAR moderately
+    state_.position = (1 - alpha) * state_.position + alpha * pos;
+    // Optionally fuse orientation
+    // state_.orientation = state_.orientation.slerp(alpha, ori);
+}
+
 RobotState StateEstimator::get_state() const {
     return state_;
 }

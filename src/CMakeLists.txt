@@ -26,47 +26,40 @@ else()
     set(EIGEN3_INCLUDE_DIR ${EIGEN3_INCLUDE_DIR})
 endif()
 
-# Unitree SDK2
-set(UNITREE_SDK_PATH "/home/unitree/development/unitree_sdk2")
-message(STATUS "Using Unitree SDK2 path: ${UNITREE_SDK_PATH}")
+# Unitree SDK2 (adjust path as needed)
+set(UNITREE_SDK_PATH "/opt/unitree_sdk2" CACHE PATH "Path to Unitree SDK2")
 include_directories(${UNITREE_SDK_PATH}/include)
 link_directories(${UNITREE_SDK_PATH}/lib)
 
-# CycloneDDS (from Unitree Robotics)
-set(CYCLONEDDS_PATH "/opt/unitree_robotics")
-message(STATUS "Using CycloneDDS path: ${CYCLONEDDS_PATH}")
-include_directories(${CYCLONEDDS_PATH}/include)
-include_directories(${CYCLONEDDS_PATH}/include/ddscxx)
-include_directories(${CYCLONEDDS_PATH}/include/ddsc)
-link_directories(${CYCLONEDDS_PATH}/lib)
+# Livox SDK (adjust path as needed)
+set(LIVOX_SDK_PATH "/opt/livox_sdk" CACHE PATH "Path to Livox SDK")
+include_directories(${LIVOX_SDK_PATH}/include)
+link_directories(${LIVOX_SDK_PATH}/lib)
 
 # Include directories
 include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${EIGEN3_INCLUDE_DIR}
 )
 
 # Source files
 set(SOURCES
-    src/ICP2D.cpp
-    src/ScanMatcher.cpp
-    src/LivoxInterface.cpp
-    src/UDPPublisher.cpp
-    src/G1Localizer.cpp
+    ICP2D.cpp
+    LivoxInterface.cpp
+    UDPPublisher.cpp
+    G1Localizer.cpp
 )
 
 # Library
 add_library(g1_localization_lib SHARED ${SOURCES})
 target_link_libraries(g1_localization_lib
     unitree_sdk2
-    ddsc
-    ddscxx
+    livox_sdk_static
     pthread
-    livox_lidar_sdk_shared
 )
 
 # Executable
-add_executable(g1_localization_node src/g1_localization_node.cpp)
+add_executable(g1_localization_node g1_localization_node.cpp)
 target_link_libraries(g1_localization_node
     g1_localization_lib
 )
@@ -78,10 +71,9 @@ install(TARGETS g1_localization_node g1_localization_lib
 )
 
 install(FILES
-    src/ICP2D.hpp
-    src/ScanMatcher.hpp
-    src/G1Localizer.hpp
-    src/LivoxInterface.hpp
-    src/UDPPublisher.hpp
+    ICP2D.hpp
+    G1Localizer.hpp
+    LivoxInterface.hpp
+    UDPPublisher.hpp
     DESTINATION include/g1_localization
 )

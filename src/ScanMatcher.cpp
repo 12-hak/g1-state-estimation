@@ -102,10 +102,9 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
         }
 
         // CLONE MISSING PIECE: The Prior (Kalman Filter behavior)
-        // We add a "cost" for deviating from the prediction.
-        // This prevents the solution from "sliding" in featureless environments.
-        float pos_stiffness = 50.0f; // Represents 1/Covariance of prediction
-        float rot_stiffness = 200.0f; 
+        // DIAGNOSTIC: Re-enabled.
+        float pos_stiffness = 50.0f; 
+        float rot_stiffness = 200.0f; // Reset to default
         
         Eigen::Matrix3f Prior_H = Eigen::Matrix3f::Identity();
         Prior_H(0,0) = pos_stiffness;
