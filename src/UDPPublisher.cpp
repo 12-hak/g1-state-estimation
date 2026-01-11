@@ -111,4 +111,30 @@ void UDPPublisher::sendMap(const std::vector<Eigen::Vector2f>& map_points) {
     sendto(socket_fd_, packet.data(), packet.size(), 0, (struct sockaddr*)receiver_addr_, sizeof(sockaddr_in));
 }
 
+void UDPPublisher::sendPose(uint64_t timestamp_us,
+                             const Eigen::Vector3f& position,
+                             const Eigen::Quaternionf& orientation,
+                             uint16_t port) {
+    // Simple packet: timestamp(8) + pos(12) + quat(16) = 36 bytes
+    uint8_t packet[36];
+    
+    // Timestamp
+    std::memcpy(packet, &timestamp_us, sizeof(uint64_t));
+    
+    // Position
+    float pos[3] = {position.x(), position.y(), position.z()};
+    std::memcpy(packet + 8, pos, 12);
+    
+    // Quaternion (w, x, y, z)
+    float quat[4] = {orientation.w(), orientation.x(), orientation.y(), orientation.z()};
+    std::memcpy(packet + 20, quat, 16);
+    
+    // Send to recorder port
+    sockaddr_in recorder_addr;
+    std::memcpy(&recorder_addr, receiver_addr_, sizeof(sockaddr_in));
+    recorder_addr.sin_port = htons(port);
+    
+    sendto(socket_fd_, packet, sizeof(packet), 0, (struct sockaddr*)&recorder_addr, sizeof(sockaddr_in));
+}
+
 } // namespace g1_localization

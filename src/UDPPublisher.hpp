@@ -48,6 +48,11 @@ public:
                    const std::vector<Eigen::Vector2f>& point_cloud);
 
     void sendMap(const std::vector<Eigen::Vector2f>& map_points);
+    
+    void sendPose(uint64_t timestamp_us,
+                  const Eigen::Vector3f& position,
+                  const Eigen::Quaternionf& orientation,
+                  uint16_t port = 9871);  // Different port for recorder
 
 private:
     int socket_fd_;
