@@ -188,9 +188,15 @@ void G1Localizer::localizationLoop() {
                 // 3. Leveling (Standard)
                 Eigen::Vector3f p_level = R_tilt.transpose() * p_body;
                 
-                // DIAGNOSTIC: Remove ALL Filters to see points
-                // if (p_level.norm() < 0.2f) continue;
-                // if (p_level.z() < -2.0f || p_level.z() > 2.0f) continue;
+                // === BODY FILTERING (2D Localization) ===
+                // Remove robot body parts for cleaner visualization
+                float dist_xy = std::sqrt(p_level.x() * p_level.x() + p_level.y() * p_level.y());
+                
+                // Skip points too close (robot body)
+                if (dist_xy < 0.3f) continue;  // 30cm radius
+                
+                // Skip head support structures
+                if (p_level.z() > -0.5f && p_level.z() < 0.5f && dist_xy < 0.5f) continue;
                 
                 base_frame_scan.emplace_back(p_level.x(), p_level.y());
                 
