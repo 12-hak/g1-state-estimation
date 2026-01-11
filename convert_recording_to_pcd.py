@@ -153,6 +153,7 @@ def main():
     parser = argparse.ArgumentParser(description='Convert G1 LiDAR recordings to point cloud format')
     parser.add_argument('recording', help='Base path to recording (without _poses.txt or _clouds.bin)')
     parser.add_argument('--format', choices=['ply', 'pcd'], default='ply', help='Output format (default: ply)')
+    parser.add_argument('--filter-interior', action='store_true', help='Remove interior points (keeps only surfaces)')
     
     args = parser.parse_args()
     
@@ -185,6 +186,13 @@ def main():
         sys.exit(1)
     
     print(f"Total points: {len(points)}")
+    
+    # Optional filtering
+    if args.filter_interior:
+        print("Filtering interior points (keeping only surfaces)...")
+        points = filter_interior_points(points)
+        print(f"After filtering: {len(points)} points")
+    
     print(f"Writing {args.format.upper()} file to {output_file}...")
     
     if args.format == 'ply':
@@ -197,6 +205,42 @@ def main():
     print("  - MeshLab: https://www.meshlab.net/")
     print("  - Blender (PLY only)")
     print("  - Online: https://www.creators3d.com/online-viewer")
+    
+    if not args.filter_interior:
+        print("\nTip: Use --filter-interior to remove interior clutter")
+
+def filter_interior_points(points, voxel_size=0.1, keep_ratio=0.3):
+    """
+    Simple filter to remove interior points.
+    For each voxel, keep only points that are furthest from origin.
+    This approximates keeping only surface points.
+    """
+    from collections import defaultdict
+    
+    voxel_map = defaultdict(list)
+    
+    # Group points by voxel
+    for pt in points:
+        vx = int(np.floor(pt[0] / voxel_size))
+        vy = int(np.floor(pt[1] / voxel_size))
+        vz = int(np.floor(pt[2] / voxel_size))
+        voxel_map[(vx, vy, vz)].append(pt)
+    
+    # For each voxel, keep only the furthest points
+    filtered = []
+    for voxel_pts in voxel_map.values():
+        if len(voxel_pts) == 1:
+            filtered.append(voxel_pts[0])
+        else:
+            # Calculate distance from origin for each point
+            distances = [np.linalg.norm(pt) for pt in voxel_pts]
+            # Keep top 30% furthest points
+            threshold = np.percentile(distances, 70)
+            for pt, dist in zip(voxel_pts, distances):
+                if dist >= threshold:
+                    filtered.append(pt)
+    
+    return np.array(filtered)
 
 if __name__ == "__main__":
     main()
