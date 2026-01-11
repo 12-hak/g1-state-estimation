@@ -344,14 +344,12 @@ void G1Localizer::localizationLoop() {
             }
             { std::lock_guard<std::mutex> lock(state_mutex_); latest_scan_2d_ = base_frame_scan; }
             last_slam_time_ = now;
-        }
-        
-        // Broadcast pose for recorder (20Hz)
-        static auto last_pose_broadcast = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pose_broadcast).count() >= 50) {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            udp_publisher_->sendPose(state_.timestamp_us, state_.position, state_.orientation);
-            last_pose_broadcast = now;
+            
+            // Broadcast pose for recorder (every loop iteration ~30Hz)
+            // Use base_pos which is the current integrated position
+            auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            udp_publisher_->sendPose(timestamp_us, base_pos, q);
         }
         
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
