@@ -71,6 +71,17 @@ target_link_libraries(g1_localization_node
     g1_localization_lib
 )
 
+# LiDAR Recorder (standalone)
+add_executable(g1_lidar_recorder 
+    src/g1_lidar_recorder.cpp
+    src/LiDARRecorder.cpp
+    src/LivoxInterface.cpp
+)
+target_link_libraries(g1_lidar_recorder
+    livox_lidar_sdk_shared
+    pthread
+)
+
 # Install
 install(TARGETS g1_localization_node g1_localization_lib
     RUNTIME DESTINATION bin

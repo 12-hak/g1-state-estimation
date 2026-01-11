@@ -11,7 +11,6 @@
 #include <memory>
 #include <atomic>
 #include <thread>
-#include <queue>
 
 namespace g1_localization {
 
@@ -83,23 +82,6 @@ private:
     std::vector<float> latest_joint_pos_;
     std::vector<float> latest_joint_vel_;
     std::vector<Eigen::Vector2f> latest_scan_2d_;
-    std::vector<Eigen::Vector3f> latest_scan_3d_;  // Full 3D scan for mapping
-    
-    // 3D Mapping (Asynchronous)
-    struct MappingData {
-        Eigen::Vector3f position;
-        Eigen::Quaternionf orientation;
-        std::vector<Eigen::Vector3f> scan_3d;
-        uint64_t timestamp_us;
-    };
-    
-    std::queue<MappingData> mapping_queue_;
-    std::mutex mapping_queue_mutex_;
-    std::thread mapping_thread_;
-    static constexpr size_t MAX_MAPPING_QUEUE_SIZE = 5;  // Leaky queue
-    
-    void mappingThreadLoop();
-    bool tryPushMappingData(const MappingData& data);  // Non-blocking push
     
     // Map
     std::vector<LidarPoint> global_map_;
