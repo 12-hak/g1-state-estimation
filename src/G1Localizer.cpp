@@ -373,12 +373,11 @@ void G1Localizer::localizationLoop() {
     }
 }
 
+
 LocalizationState G1Localizer::getState() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return state_;
 }
-
-} // namespace g1_localization
 
 bool G1Localizer::tryPushMappingData(const MappingData& data) {
     std::lock_guard<std::mutex> lock(mapping_queue_mutex_);
@@ -488,4 +487,6 @@ void G1Localizer::mappingThreadLoop() {
     
     std::cout << "[G1Mapper] Thread stopped. Final map size: " << global_map_3d.size() << std::endl;
 }
+
+} // namespace g1_localization
 
