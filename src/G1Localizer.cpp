@@ -2,6 +2,7 @@
 #include <unitree/robot/channel/channel_factory.hpp>
 #include <cmath>
 #include <iostream>
+#include <iomanip>
 #include <algorithm>
 #include <fstream>
 #include <map>
@@ -226,21 +227,57 @@ void G1Localizer::localizationLoop() {
                                        std::pow(base_pos.y() - last_map_update_y, 2));
             
             // If checking first frame OR moved enough (Keyframe logic)
-            // Reduced to 0.2m for richer map building
-            if (global_map_.empty() || (dist_moved > 0.2f && state_.icp_valid)) {
+            // Reduced to 0.1m for DENSE map building
+            if (global_map_.empty() || (dist_moved > 0.1f && state_.icp_valid)) {
                 
-                // === 3D MAPPING: Push to mapping thread (Non-Blocking) ===
+                // === 3D MAPPING: Process and push to mapping thread ===
+                std::vector<Eigen::Vector3f> filtered_scan_3d;
+                filtered_scan_3d.reserve(n_points);
+                
+                // Process each 3D point with proper transformations and filtering
+                for (int i = 0; i < n_points; ++i) {
+                    float dt = (float)i / n_points * scan_time;
+                    float angle_correction = -gyro.z() * dt;
+                    Eigen::Matrix3f R_deskew = Eigen::AngleAxisf(angle_correction, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+                    
+                    // 1. De-skew point in LiDAR frame
+                    Eigen::Vector3f p_lidar = R_deskew * points_3d[i];
+                    
+                    // 2. Transform to Body Frame
+                    Eigen::Vector3f p_body = p_lidar + flat_offset;
+                    
+                    // 3. Leveling to get gravity-aligned point
+                    Eigen::Vector3f p_level = R_tilt.transpose() * p_body;
+                    
+                    // === FILTERING ===
+                    // Remove robot body parts (head supports, torso)
+                    float dist_xy = std::sqrt(p_level.x() * p_level.x() + p_level.y() * p_level.y());
+                    
+                    // Filter 1: Remove points too close (robot body)
+                    if (dist_xy < 0.3f) continue;  // 30cm radius around robot
+                    
+                    // Filter 2: Remove points at head height (support structures)
+                    if (p_level.z() > -0.5f && p_level.z() < 0.5f && dist_xy < 0.5f) continue;
+                    
+                    // Filter 3: Remove extreme outliers
+                    if (dist_xy > 20.0f) continue;  // 20m max range
+                    if (p_level.z() < -3.0f || p_level.z() > 3.0f) continue;  // Reasonable height
+                    
+                    filtered_scan_3d.push_back(p_level);
+                }
+                
                 uint64_t timestamp_snapshot;
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
-                    latest_scan_3d_ = points_3d;  // Store full 3D scan
+                    latest_scan_3d_ = filtered_scan_3d;
                     timestamp_snapshot = state_.timestamp_us;
                 }
                 
+                // Use ICP-corrected pose (base_pos already includes SLAM correction)
                 MappingData mapping_data;
-                mapping_data.position = base_pos;
+                mapping_data.position = base_pos;  // This is position_raw + slam_correction
                 mapping_data.orientation = q;
-                mapping_data.scan_3d = points_3d;  // Deep copy
+                mapping_data.scan_3d = filtered_scan_3d;  // Filtered points
                 mapping_data.timestamp_us = timestamp_snapshot;
                 
                 if (!tryPushMappingData(mapping_data)) {
@@ -392,7 +429,7 @@ bool G1Localizer::tryPushMappingData(const MappingData& data) {
 }
 
 void G1Localizer::mappingThreadLoop() {
-    std::cout << "[G1Mapper] Thread started" << std::endl;
+    std::cout << "[G1Mapper] Thread started (High Resolution Mode)" << std::endl;
     
     // Global 3D Map (Simple Voxel Grid)
     struct VoxelKey {
@@ -405,7 +442,7 @@ void G1Localizer::mappingThreadLoop() {
     };
     
     std::map<VoxelKey, Eigen::Vector3f> global_map_3d;
-    const float voxel_size = 0.05f;  // 5cm voxels
+    const float voxel_size = 0.02f;  // 2cm voxels for high resolution
     
     auto voxelize = [&](const Eigen::Vector3f& pt) -> VoxelKey {
         return {
@@ -416,6 +453,7 @@ void G1Localizer::mappingThreadLoop() {
     };
     
     size_t total_scans_processed = 0;
+    size_t total_points_received = 0;
     auto last_save = std::chrono::steady_clock::now();
     
     while (running_) {
@@ -439,21 +477,31 @@ void G1Localizer::mappingThreadLoop() {
         
         // Transform scan to world frame
         Eigen::Matrix3f R = data.orientation.toRotationMatrix();
+        size_t points_added_this_scan = 0;
+        
         for (const auto& pt_local : data.scan_3d) {
             Eigen::Vector3f pt_world = R * pt_local + data.position;
             
             // Add to voxel grid
             VoxelKey key = voxelize(pt_world);
             global_map_3d[key] = pt_world;  // Overwrite (keeps latest)
+            points_added_this_scan++;
         }
         
         total_scans_processed++;
+        total_points_received += data.scan_3d.size();
         
-        // Periodic save (every 10 seconds)
+        // Periodic save (every 5 seconds for more frequent updates)
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_save).count() >= 10) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_save).count() >= 5) {
+            float filter_efficiency = total_points_received > 0 ? 
+                (100.0f * global_map_3d.size() / total_points_received) : 0.0f;
+            
             std::cout << "[G1Mapper] Scans: " << total_scans_processed 
-                      << ", Map Points: " << global_map_3d.size() << std::endl;
+                      << ", Points Received: " << total_points_received
+                      << ", Map Points: " << global_map_3d.size()
+                      << " (" << std::fixed << std::setprecision(1) << filter_efficiency << "% unique)"
+                      << std::endl;
             
             // Save to PCD file
             std::string filename = "map_3d.pcd";
@@ -478,14 +526,16 @@ void G1Localizer::mappingThreadLoop() {
                 }
                 
                 file.close();
-                std::cout << "[G1Mapper] Saved " << filename << std::endl;
+                std::cout << "[G1Mapper] Saved " << filename 
+                          << " (" << (global_map_3d.size() * 12 / 1024) << " KB)" << std::endl;
             }
             
             last_save = now;
         }
     }
     
-    std::cout << "[G1Mapper] Thread stopped. Final map size: " << global_map_3d.size() << std::endl;
+    std::cout << "[G1Mapper] Thread stopped. Final map: " << global_map_3d.size() 
+              << " points from " << total_scans_processed << " scans" << std::endl;
 }
 
 } // namespace g1_localization
