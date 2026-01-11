@@ -8,3 +8,10 @@ bin/
 unitree_sdk2/
 thirdparty/eigen/
 g1_state_estimator
+
+# Recording outputs
+recordings/
+*.pcd
+*.ply
+*_poses.txt
+*_clouds.bin
