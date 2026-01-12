@@ -672,7 +672,7 @@ class G1NetworkVisualizer:
                 # This preserves the high-resolution detail from the C++ adaptive grid
                 
                 # Render all points at full height (clean scan visualization)
-                height = 1.0
+                height = 1.5  # 1.5m tall walls
                 alpha = 0.9
                 
                 # Get robot position for distance calculation
@@ -731,14 +731,14 @@ class G1NetworkVisualizer:
                         color = np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32)
                         point_size = 0.025  # 2.5cm - chunky
                     
-                    # Project as a Vertical Cylinder (Wall Segment) - forms more solid walls
+                    # Project as a Vertical Cylinder (Wall Segment) - 1.5m tall from ground
                     viz_pt = np.array(point, dtype=np.float64)
-                    viz_pt[2] = height / 2  # Center of wall
+                    viz_pt[2] = height / 2  # Center at 0.75m (ground=0, top=1.5m)
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
                         mujoco.mjtGeom.mjGEOM_CYLINDER,
-                        np.array([point_size * 1.2, 0, height/2], dtype=np.float64),  # Radius, unused, half-height
+                        np.array([point_size * 1.5, 0, height/2], dtype=np.float64),  # Radius, unused, half-height (0.75m)
                         viz_pt,
                         np.eye(3, dtype=np.float64).flatten(),
                         color
