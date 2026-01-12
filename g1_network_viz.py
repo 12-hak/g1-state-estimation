@@ -356,7 +356,7 @@ class G1NetworkVisualizer:
 
                     current_time = time.time()
                     with self.state_lock:
-                        # PERSISTENT MAP: Accumulate points instead of replacing
+                        # PERSISTENT MAP with deduplication and limits
                         if new_points.size > 0:
                             if self.map_cloud.size == 0:
                                 self.map_cloud = new_points.copy()
@@ -364,7 +364,24 @@ class G1NetworkVisualizer:
                                 # Merge new points with existing map
                                 self.map_cloud = np.vstack([self.map_cloud, new_points])
                             
-                            # Update ages for new points
+                            # Deduplicate using grid (5cm) to prevent point explosion
+                            if self.map_cloud.shape[0] > 3000:  # Only dedupe if getting large
+                                grid_size = 0.05  # 5cm grid
+                                unique_points = {}
+                                for pt in self.map_cloud:
+                                    key = (round(pt[0] / grid_size), round(pt[1] / grid_size))
+                                    if key not in unique_points:
+                                        unique_points[key] = pt
+                                
+                                self.map_cloud = np.array(list(unique_points.values()))
+                            
+                            # Cap at 5000 points max for performance
+                            if self.map_cloud.shape[0] > 5000:
+                                # Keep most recent 5000 points
+                                self.map_cloud = self.map_cloud[-5000:]
+                            
+                            # Update ages for tracking
+                            self.map_point_ages = {}
                             for pt in new_points:
                                 p_tuple = tuple(np.round(pt[:2], 2))
                                 self.map_point_ages[p_tuple] = current_time
@@ -710,17 +727,18 @@ class G1NetworkVisualizer:
                     )
                     viewer.user_scn.ngeom += 1
             
-            # --- RENDER ROBOT PATH (Ground track) ---
+            # --- RENDER ROBOT PATH (Ground track) - Optimized ---
             if len(self.robot_path) > 1:
-                for i in range(len(self.robot_path) - 1):
+                # Downsample path for performance (every 5th point, max 200 points)
+                step = max(1, len(self.robot_path) // 200)
+                path_subset = self.robot_path[::step]
+                
+                for i, pos in enumerate(path_subset):
                     if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
                         break
                     
-                    # Draw small spheres along the path
-                    pos = self.robot_path[i]
-                    
                     # Fade older path points
-                    age_factor = i / len(self.robot_path)  # 0 (old) to 1 (new)
+                    age_factor = i / len(path_subset)  # 0 (old) to 1 (new)
                     path_alpha = 0.3 + 0.4 * age_factor  # 0.3 to 0.7
                     
                     mujoco.mjv_initGeom(
