@@ -221,6 +221,10 @@ class G1NetworkVisualizer:
         self.robot_path = []  # List of positions the robot has visited
         self.last_path_update = 0
         self.path_update_interval = 0.1  # Add path point every 100ms
+        
+        # Persistent wall tracking
+        self.wall_segments = {}  # Dict of wall segments: {grid_key: (point, last_seen_time, confidence)}
+        self.wall_timeout = 30.0  # Walls persist for 30 seconds without confirmation
 
         # UDP receiver
         if not demo_mode:
@@ -356,35 +360,49 @@ class G1NetworkVisualizer:
 
                     current_time = time.time()
                     with self.state_lock:
-                        # PERSISTENT MAP with deduplication and limits
+                        # PERSISTENT WALLS: Update wall segments with contradiction detection
                         if new_points.size > 0:
-                            if self.map_cloud.size == 0:
-                                self.map_cloud = new_points.copy()
-                            else:
-                                # Merge new points with existing map
-                                self.map_cloud = np.vstack([self.map_cloud, new_points])
-                            
-                            # Deduplicate using grid (5cm) to prevent point explosion
-                            if self.map_cloud.shape[0] > 3000:  # Only dedupe if getting large
-                                grid_size = 0.05  # 5cm grid
-                                unique_points = {}
-                                for pt in self.map_cloud:
-                                    key = (round(pt[0] / grid_size), round(pt[1] / grid_size))
-                                    if key not in unique_points:
-                                        unique_points[key] = pt
-                                
-                                self.map_cloud = np.array(list(unique_points.values()))
-                            
-                            # Cap at 5000 points max for performance
-                            if self.map_cloud.shape[0] > 5000:
-                                # Keep most recent 5000 points
-                                self.map_cloud = self.map_cloud[-5000:]
-                            
-                            # Update ages for tracking
-                            self.map_point_ages = {}
+                            # Update wall segments
                             for pt in new_points:
-                                p_tuple = tuple(np.round(pt[:2], 2))
-                                self.map_point_ages[p_tuple] = current_time
+                                # Grid key for deduplication (5cm grid)
+                                key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
+                                
+                                # Add or update wall segment
+                                if key in self.wall_segments:
+                                    # Existing wall - update timestamp and increase confidence
+                                    old_pt, old_time, confidence = self.wall_segments[key]
+                                    self.wall_segments[key] = (pt, current_time, min(confidence + 0.1, 1.0))
+                                else:
+                                    # New wall segment
+                                    self.wall_segments[key] = (pt, current_time, 0.5)
+                            
+                            # Check for contradictions: if robot passes through a wall, remove it
+                            robot_pos = self.position[:2] if hasattr(self, 'position') else np.array([0, 0])
+                            robot_key = (round(robot_pos[0] / 0.05), round(robot_pos[1] / 0.05))
+                            
+                            # Remove walls within 30cm of robot position (robot passed through)
+                            keys_to_remove = []
+                            for key, (pt, last_time, conf) in self.wall_segments.items():
+                                dist_to_robot = np.linalg.norm(pt[:2] - robot_pos)
+                                if dist_to_robot < 0.3:  # 30cm radius around robot
+                                    keys_to_remove.append(key)
+                            
+                            for key in keys_to_remove:
+                                del self.wall_segments[key]
+                            
+                            # Remove old walls that haven't been seen recently
+                            keys_to_remove = []
+                            for key, (pt, last_time, conf) in self.wall_segments.items():
+                                if current_time - last_time > self.wall_timeout:
+                                    keys_to_remove.append(key)
+                            
+                            for key in keys_to_remove:
+                                del self.wall_segments[key]
+                            
+                            # Build map cloud from wall segments for rendering
+                            self.map_cloud = np.array([pt for pt, _, _ in self.wall_segments.values()])
+                            if self.map_cloud.size == 0:
+                                self.map_cloud = np.empty((0, 3))
                             self.last_good_scan_time = current_time
                         # Always update packet time to track when we last received data
                         self.last_map_packet_time = current_time
@@ -727,27 +745,55 @@ class G1NetworkVisualizer:
                     )
                     viewer.user_scn.ngeom += 1
             
-            # --- RENDER ROBOT PATH (Ground track) - Optimized ---
+            # --- RENDER ROBOT PATH (Connected line) - Optimized ---
             if len(self.robot_path) > 1:
-                # Downsample path for performance (every 5th point, max 200 points)
+                # Downsample path for performance (max 200 points)
                 step = max(1, len(self.robot_path) // 200)
                 path_subset = self.robot_path[::step]
                 
-                for i, pos in enumerate(path_subset):
+                # Draw connected line segments
+                for i in range(len(path_subset) - 1):
                     if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
                         break
                     
-                    # Fade older path points
+                    pos1 = path_subset[i]
+                    pos2 = path_subset[i + 1]
+                    
+                    # Calculate midpoint and direction for capsule
+                    midpoint = (pos1 + pos2) / 2
+                    direction = pos2 - pos1
+                    length = np.linalg.norm(direction)
+                    
+                    if length < 0.001:  # Skip very short segments
+                        continue
+                    
+                    # Normalize direction
+                    direction = direction / length
+                    
+                    # Create rotation matrix to align capsule with path
+                    # Capsule default axis is Z, we want it along XY plane
+                    z_axis = np.array([0, 0, 1])
+                    path_axis = np.array([direction[0], direction[1], 0])
+                    
+                    # Rotation from Z to path direction
+                    angle = np.arctan2(direction[1], direction[0])
+                    rot_mat = np.array([
+                        [np.cos(angle), -np.sin(angle), 0],
+                        [np.sin(angle), np.cos(angle), 0],
+                        [0, 0, 1]
+                    ], dtype=np.float64)
+                    
+                    # Fade older path segments
                     age_factor = i / len(path_subset)  # 0 (old) to 1 (new)
-                    path_alpha = 0.3 + 0.4 * age_factor  # 0.3 to 0.7
+                    path_alpha = 0.4 + 0.4 * age_factor  # 0.4 to 0.8
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_SPHERE,
-                        np.array([0.02, 0, 0], dtype=np.float64),  # 2cm radius
-                        np.array([pos[0], pos[1], 0.01], dtype=np.float64),  # Just above ground
-                        np.eye(3, dtype=np.float64).flatten(),
-                        np.array([0.3, 0.6, 1.0, path_alpha], dtype=np.float32)  # Blue trail
+                        mujoco.mjtGeom.mjGEOM_CAPSULE,
+                        np.array([0.015, 0, length/2], dtype=np.float64),  # radius, unused, half-length
+                        np.array([midpoint[0], midpoint[1], 0.01], dtype=np.float64),
+                        rot_mat.flatten(),
+                        np.array([0.2, 0.5, 1.0, path_alpha], dtype=np.float32)  # Blue trail
                     )
                     viewer.user_scn.ngeom += 1
             
