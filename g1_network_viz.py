@@ -715,30 +715,30 @@ class G1NetworkVisualizer:
                     dist = np.linalg.norm(point_2d - robot_pos)
                     
                     # Color gradient: Red (close) -> Yellow (mid) -> Green (far)
-                    # Point size: Smaller for close (show detail), larger for far
+                    # Point size: Larger boxes that overlap to form solid walls
                     if dist < 1.0:
-                        # Red to Yellow (0-1m) - SMALL points for detail
+                        # Red to Yellow (0-1m) - SMALL boxes for detail
                         t = dist  # 0 to 1
                         color = np.array([1.0, t, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.008  # 0.8cm - fine detail
+                        point_size = 0.024  # 2.4cm - overlapping boxes
                     elif dist < 2.0:
-                        # Yellow to Green (1-2m) - MEDIUM points
+                        # Yellow to Green (1-2m) - MEDIUM boxes
                         t = dist - 1.0  # 0 to 1
                         color = np.array([1.0 - t, 1.0, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.015  # 1.5cm - standard
+                        point_size = 0.045  # 4.5cm - standard overlapping
                     else:
-                        # Green (2m+) - LARGE points
+                        # Green (2m+) - LARGE boxes
                         color = np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.025  # 2.5cm - chunky
+                        point_size = 0.075  # 7.5cm - chunky overlapping
                     
-                    # Project as a Vertical Cylinder (Wall Segment) - 1.5m tall from ground
+                    # Project as a Vertical Box (Wall Segment) - 1.5m tall from ground
                     viz_pt = np.array(point, dtype=np.float64)
                     viz_pt[2] = height / 2  # Center at 0.75m (ground=0, top=1.5m)
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_CYLINDER,
-                        np.array([point_size * 1.5, 0, height/2], dtype=np.float64),  # Radius, unused, half-height (0.75m)
+                        mujoco.mjtGeom.mjGEOM_BOX,
+                        np.array([point_size/2, point_size/2, height/2], dtype=np.float64),  # Half-extents
                         viz_pt,
                         np.eye(3, dtype=np.float64).flatten(),
                         color
