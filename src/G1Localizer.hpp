@@ -101,9 +101,13 @@ private:
     
     // SLAM Correction (Drift fix)
     Eigen::Vector3f slam_correction_;
+    float slam_yaw_correction_;
     float position_alpha_;
     float velocity_alpha_;
     float slam_interval_;
+    
+    // Status
+    std::atomic<bool> is_stationary_;
 };
 
 } // namespace g1_localization

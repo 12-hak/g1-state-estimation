@@ -52,6 +52,7 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
     float theta = init_theta;
     bool converged = false;
     float avg_error = 0.0f;
+    int matches = 0;  // Moved outside loop for final check
 
     for (int iter = 0; iter < max_iterations_; ++iter) {
         float c = std::cos(theta), s = std::sin(theta);
@@ -61,7 +62,7 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
         Eigen::Matrix3f H = Eigen::Matrix3f::Zero();
         Eigen::Vector3f b = Eigen::Vector3f::Zero();
         float total_err = 0;
-        int matches = 0;
+        matches = 0;  // Reset each iteration
 
         for (const auto& pt_src : source) {
             Eigen::Vector2f pt_curr = R * pt_src + t;
@@ -121,15 +122,27 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
         if (matches < 10) break;
         avg_error = total_err / matches;
 
-        if (iter > 0 && b.norm() < 1e-4) {
+        // Relaxed convergence: Trust the error metric instead of gradient norm
+        // The strict gradient threshold (1e-4) rarely succeeds in real environments
+        if (iter > 0 && b.norm() < 1e-3) {  // Relaxed from 1e-4 to 1e-3
             converged = true;
             break;
+        }
+        
+        // Also mark as converged if error is stable and low
+        if (iter >= 5 && avg_error < 0.20f) {
+            converged = true;
         }
 
         Eigen::Vector3f delta = H.ldlt().solve(b);
         t.x() += delta(0);
         t.y() += delta(1);
         theta += delta(2);
+    }
+    
+    // Final convergence check: If we have good matches and low error, accept it
+    if (matches >= 20 && avg_error < 0.25f) {
+        converged = true;
     }
     
     return {Eigen::Rotation2D<float>(theta).toRotationMatrix(), t, avg_error, converged};

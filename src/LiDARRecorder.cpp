@@ -1,4 +1,5 @@
 #include "LiDARRecorder.hpp"
+#include <filesystem>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -18,7 +19,7 @@ LiDARRecorder::LiDARRecorder(const std::string& output_dir,
     livox_ = std::make_unique<LivoxInterface>();
     
     // Create output directory if needed
-    system(("mkdir -p " + output_dir).c_str());
+    std::filesystem::create_directories(output_dir);
     
     // Generate timestamp-based filename
     auto now = std::chrono::system_clock::now();
@@ -145,12 +146,23 @@ void LiDARRecorder::recordingLoop() {
                    << pose.orientation.y() << " " << pose.orientation.z() << "\n";
         
         // Write point cloud to binary file
-        // Format: frame_header(timestamp + num_points) + points(x,y,z floats)
-        cloud_file_.write((char*)&pose.timestamp_us, sizeof(uint64_t));
-        uint32_t num_points = points.size();
-        cloud_file_.write((char*)&num_points, sizeof(uint32_t));
+        // Filter points sticking to the robot body (Solid Infill Fix)
+        std::vector<Eigen::Vector3f> filtered_points;
+        filtered_points.reserve(points.size());
         
         for (const auto& pt : points) {
+            // Distance check (radius filter)
+            float dist_sq = pt.x()*pt.x() + pt.y()*pt.y() + pt.z()*pt.z();
+            if (dist_sq < 0.1225f) continue; // 0.35m radius
+            
+            filtered_points.push_back(pt);
+        }
+
+        cloud_file_.write((char*)&pose.timestamp_us, sizeof(uint64_t));
+        uint32_t num_points = filtered_points.size();
+        cloud_file_.write((char*)&num_points, sizeof(uint32_t));
+        
+        for (const auto& pt : filtered_points) {
             cloud_file_.write((char*)&pt.x(), sizeof(float));
             cloud_file_.write((char*)&pt.y(), sizeof(float));
             cloud_file_.write((char*)&pt.z(), sizeof(float));

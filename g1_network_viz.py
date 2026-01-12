@@ -201,9 +201,21 @@ class G1NetworkVisualizer:
         self.imu_quaternion = np.array([1, 0, 0, 0])  # w, x, y, z (identity)
         self.imu_gyro = np.zeros(3)
         self.point_cloud = np.empty((0, 3))  # LiDAR point cloud
+        self.map_cloud = np.empty((0, 3))  # Map point cloud (from G1M1 packets)
+        self.map_point_ages = {}  # Track when each map point was last seen
         self.state_received = False
         self.last_state_time = 0
         self.state_lock = threading.Lock()
+        
+        # Scan quality tracking for visualization
+        self.last_good_scan_time = 0
+        self.last_scan_sequence = 0
+        self.scan_sequence_counter = 0
+        self.last_map_packet_time = 0  # Last time we received a G1M1 snapshot
+        
+        # Accumulate scans over time to build complete scan
+        self.scan_buffer = []  # List of (time, points) tuples
+        self.scan_buffer_max_age = 0.5  # Accumulate scans over 0.5 seconds
 
         # UDP receiver
         if not demo_mode:
@@ -233,6 +245,90 @@ class G1NetworkVisualizer:
                 continue
             except Exception as e:
                 print(f"Receive error: {e}")
+    
+    def _is_good_scan(self, points: np.ndarray) -> bool:
+        """
+        Check if a scan is good quality.
+        Filters out scans with:
+        - Too few points (small response)
+        - Swirl patterns (circular clustering)
+        - Points too clustered (not enough spread)
+        """
+        if points.size == 0:
+            return False
+        
+        # Extract 2D points (x, y)
+        points_2d = points[:, :2]
+        n_points = len(points_2d)
+        
+        # 1. Minimum point count check (relaxed for accumulated scans)
+        MIN_POINTS = 30  # Require at least 30 points (was 50, but we accumulate now)
+        if n_points < MIN_POINTS:
+            return False
+        
+        # 2. Check for sufficient spread (not all points in one place)
+        if n_points > 0:
+            center = np.mean(points_2d, axis=0)
+            distances = np.linalg.norm(points_2d - center, axis=1)
+            max_dist = np.max(distances)
+            mean_dist = np.mean(distances)
+            
+            # Require reasonable spread (relaxed for smaller scans)
+            # At least 0.3m max distance, 0.15m mean (was 0.5m/0.2m)
+            if max_dist < 0.3 or mean_dist < 0.15:
+                return False
+        
+        # 3. Swirl detection: Check if points form a circular pattern
+        # Swirls typically have points clustered in a ring with low variance in distance from center
+        if n_points > 10:
+            # Calculate angular distribution
+            angles = np.arctan2(points_2d[:, 1] - center[1], points_2d[:, 0] - center[0])
+            # Normalize angles to [0, 2π]
+            angles = (angles + 2 * np.pi) % (2 * np.pi)
+            angles_sorted = np.sort(angles)
+            
+            # Check angular spread - swirls have points distributed around circle
+            # but we want to detect if they're TOO evenly distributed (swirl pattern)
+            angle_diffs = np.diff(angles_sorted)
+            angle_diffs = np.append(angle_diffs, 2 * np.pi - angles_sorted[-1] + angles_sorted[0])
+            
+            # Swirl pattern: points evenly spaced in angle with similar distances
+            # Check coefficient of variation of distances (low = similar distances = potential swirl)
+            if len(distances) > 5:
+                dist_std = np.std(distances)
+                dist_mean = np.mean(distances)
+                if dist_mean > 0:
+                    dist_cv = dist_std / dist_mean
+                    # If distances are very similar (CV < 0.25) AND angles are evenly spread, likely a swirl
+                    # Made stricter to avoid false positives
+                    angle_std = np.std(angle_diffs)
+                    expected_angle_diff = 2 * np.pi / n_points
+                    if dist_cv < 0.25 and angle_std < expected_angle_diff * 0.4:
+                        return False  # Likely a swirl
+        
+        # 4. Check for reasonable point density (not too sparse)
+        # Calculate nearest neighbor distances using numpy only
+        if n_points > 20:
+            # Sample a subset for performance
+            sample_size = min(100, n_points)
+            indices = np.random.choice(n_points, sample_size, replace=False)
+            sample_points = points_2d[indices]
+            
+            # Find minimum distances (excluding self) using numpy
+            min_dists = []
+            for i, pt in enumerate(sample_points):
+                dists = np.linalg.norm(sample_points - pt, axis=1)
+                dists[i] = np.inf  # Exclude self
+                min_dists.append(np.min(dists))
+            
+            mean_min_dist = np.mean(min_dists)
+            
+            # If points are too sparse (mean min distance > 1m), might be a bad scan
+            if mean_min_dist > 1.0:
+                return False
+        
+        # All checks passed - this is a good scan
+        return True
 
     def _parse_packet(self, data: bytes):
         """Parse received UDP packet (supports v1, v2, and v3 formats)."""
@@ -243,16 +339,30 @@ class G1NetworkVisualizer:
             # Check magic bytes to determine version
             magic = data[:4]
 
-            # Handle MAP packet (G1M1)
+            # MAP packet (G1M1): treat as the primary visualization scan.
+            # After fixes in g1_localization, this should be an IMU-leveled horizontal slice
+            # already in world coordinates (z ~= 0).
             if magic == b"G1M1" and len(data) >= 8:
                 _, point_count = struct.unpack("<4sI", data[:8])
                 if len(data) >= 8 + point_count * 12:
                     points_data = data[8 : 8 + point_count * 12]
                     points = struct.unpack(f"<{point_count * 3}f", points_data)
-                    map_cloud = np.array(points).reshape(-1, 3)
+                    new_points = np.array(points).reshape(-1, 3)
+
+                    current_time = time.time()
                     with self.state_lock:
-                        self.map_cloud = map_cloud
-                        print(f"[Visualizer] Received reference map with {point_count} points.")
+                        # Only replace scan if we have points (prevents fading when stationary)
+                        # If new_points is empty, keep the existing scan
+                        if new_points.size > 0:
+                            self.map_cloud = new_points.copy()
+                            self.map_point_ages = {}
+                            for pt in new_points:
+                                p_tuple = tuple(np.round(pt[:2], 2))
+                                self.map_point_ages[p_tuple] = current_time
+                            self.last_good_scan_time = current_time
+                        # Always update packet time to track when we last received data
+                        self.last_map_packet_time = current_time
+
                 return
 
             if magic == b"G1S4" and len(data) >= PACKET_SIZE_V4_BASE:
@@ -268,7 +378,7 @@ class G1NetworkVisualizer:
                 imu_gyro = unpacked[72:75]  # 3 floats
                 point_count = unpacked[75]  # uint32
 
-                # Parse point cloud if present
+                # Parse point cloud if present (raw LiDAR scan in robot frame)
                 point_cloud = np.empty((0, 3))
                 if point_count > 0 and len(data) >= PACKET_SIZE_V4_BASE + point_count * 12:
                     points_data = data[PACKET_SIZE_V4_BASE : PACKET_SIZE_V4_BASE + point_count * 12]
@@ -289,6 +399,10 @@ class G1NetworkVisualizer:
                     if not self.state_received:
                         print(f"Receiving robot state (v4 with dual positioning and {point_count} LiDAR points)!")
                         self.state_received = True
+                    
+                    # G1S4 point_cloud is NOT used for visualization - we only use G1M1 snapshots
+                    # This prevents flashing between small chunks and full scans.
+                    # The G1M1 packets now always contain full 360 scans (accumulated over 0.8s)
 
             elif magic == b"G1S3" and len(data) >= PACKET_SIZE_V3:
                 # V3 format with position and velocity
@@ -402,16 +516,9 @@ class G1NetworkVisualizer:
         """Update MuJoCo model from received network state."""
         with self.state_lock:
             # Update base position from state estimation (X, Y ONLY)
-            # Z will be computed by _ground_robot based on joint configuration
-            # Calculate Visual Position (Pivot) for stable rendering
-            yaw_approx = 2.0 * np.arctan2(self.imu_quaternion[3], self.imu_quaternion[0])
-            c, s = np.cos(yaw_approx), np.sin(yaw_approx)
-            R_yaw = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-            visual_offset = np.array([0.1, 0, 0])
-            visual_pos = self.position - R_yaw @ visual_offset
-
-            self.data.qpos[0] = visual_pos[0]
-            self.data.qpos[1] = visual_pos[1]
+            # The robot is now centered EXACTLY on the converged (ICP) position.
+            self.data.qpos[0] = self.position[0]
+            self.data.qpos[1] = self.position[1]
             # Don't set qpos[2] here - let _ground_robot compute it
 
             # Update joint positions FIRST (before grounding)
@@ -499,79 +606,74 @@ class G1NetworkVisualizer:
             viewer.user_scn.maxgeom = 10000
             viewer.user_scn.geoms = mujoco.MjvGeom(10000) # Re-allocate if needed (pseudo-code, python bindings handle resizing usually)
             
-        # VISUAL CORRECTION: 
-        # The Math tracks the IMU. The Visuals should track the Pivot to kill the "Circle".
-        # We shift the visualized dots BACKWARD relative to the robot orientation.
-        # Pivot is ~0.2m BEHIND IMU (Heels).
-        # Green Dot = State_Pos - R_body * (0.2, 0, 0)
-        
-        # Quaternion is [w, x, y, z]
-        # Yaw Approx = 2 * atan2(z, w)
-        yaw = 2.0 * np.arctan2(self.imu_quaternion[3], self.imu_quaternion[0])
-        c, s = np.cos(yaw), np.sin(yaw)
-        R_yaw = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-        
-        visual_offset = np.array([0.1, 0, 0]) 
-        visual_pos_green = self.position - R_yaw @ visual_offset
-        visual_pos_blue  = self.position_raw - R_yaw @ visual_offset
-        
+        # Converged (ICP) position
+        viz_pos_converged = self.position
         with self.state_lock:
             # Only render if we have V4 data (point_cloud exists)
             if not hasattr(self, 'point_cloud'):
                 return
             
-            # --- RENDER MAP (White) ---
-            if hasattr(self, 'map_cloud'):
-                 # Debug Log (1Hz)
-                 if time.time() - getattr(self, '_last_map_debug', 0) > 1.0:
-                     print(f"DEBUG: Rendering Map Cloud. Points: {len(self.map_cloud)}")
-                     self._last_map_debug = time.time()
-
+            # --- RENDER MAP (Distance-based color gradient) ---
             if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
-                # Decimate map based on size to keep FPS reasonable
-                # Target 2,000 points (Draw basically everything we receive)
-                step = max(1, len(self.map_cloud) // 2000) 
+                # Target 1,500 wall segments (Draw basic structure)
+                step = max(1, len(self.map_cloud) // 1500)
                 map_subset = self.map_cloud[::step]
+                
+                # Render all points at full height (clean scan visualization)
+                height = 1.0
+                alpha = 0.9
+                
+                # Get robot position for distance calculation
+                robot_pos = np.array([viz_pos_converged[0], viz_pos_converged[1]])
                 
                 for point in map_subset:
                     if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
-                        print("Max Geom Exceeded (Map)!")
                         break
                     
-                    # Project to Ground Plane (2D Map Style)
+                    # Calculate distance from robot to point
+                    point_2d = np.array([point[0], point[1]])
+                    dist = np.linalg.norm(point_2d - robot_pos)
+                    
+                    # Color gradient: Red (close) -> Yellow (mid) -> Green (far)
+                    # 0-1m: Red to Yellow
+                    # 1-2m: Yellow to Green
+                    # 2-3.5m: Green
+                    if dist < 1.0:
+                        # Red to Yellow (0-1m)
+                        t = dist  # 0 to 1
+                        color = np.array([1.0, t, 0.0, alpha], dtype=np.float32)
+                    elif dist < 2.0:
+                        # Yellow to Green (1-2m)
+                        t = dist - 1.0  # 0 to 1
+                        color = np.array([1.0 - t, 1.0, 0.0, alpha], dtype=np.float32)
+                    else:
+                        # Green (2m+)
+                        color = np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32)
+                    
+                    # Project as a Vertical Box (Wall Segment)
                     viz_pt = np.array(point, dtype=np.float64)
-                    viz_pt[2] = 0.05 # Slight lift
+                    viz_pt[2] = height / 2  # Center of wall
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_SPHERE,
-                        np.array([0.01, 0, 0], dtype=np.float64), # 1cm Dots (Visible)
+                        mujoco.mjtGeom.mjGEOM_BOX,
+                        np.array([0.015, 0.015, height/2], dtype=np.float64),
                         viz_pt,
                         np.eye(3, dtype=np.float64).flatten(),
-                        np.array([1, 1, 1, 1.0], dtype=np.float32)  # Opaque White
+                        color
                     )
                     viewer.user_scn.ngeom += 1
             
-            # --- RENDER MARKERS (Green/Blue) ---
+            # --- RENDER CONVERGED DOT (Green) ---
             if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
+                # Large distinct dot for the single source of truth
                 mujoco.mjv_initGeom(
                     viewer.user_scn.geoms[viewer.user_scn.ngeom],
                     mujoco.mjtGeom.mjGEOM_SPHERE,
-                    np.array([0.05, 0, 0], dtype=np.float64),
-                    np.array([visual_pos_blue[0], visual_pos_blue[1], 0.05], dtype=np.float64),
+                    np.array([0.06, 0, 0], dtype=np.float64),
+                    np.array([viz_pos_converged[0], viz_pos_converged[1], 0.02], dtype=np.float64),
                     np.eye(3, dtype=np.float64).flatten(),
-                    np.array([0, 0, 1, 0.6], dtype=np.float32)  # blue (Leg Odom)
-                )
-                viewer.user_scn.ngeom += 1
-            
-            if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
-                mujoco.mjv_initGeom(
-                    viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                    mujoco.mjtGeom.mjGEOM_SPHERE,
-                    np.array([0.05, 0, 0], dtype=np.float64),
-                    np.array([visual_pos_green[0], visual_pos_green[1], 0.05], dtype=np.float64),
-                    np.eye(3, dtype=np.float64).flatten(),
-                    np.array([0, 1, 0, 0.6], dtype=np.float32)  # green (SLAM)
+                    np.array([0, 1, 0, 0.8], dtype=np.float32)  # Bright Solid Green
                 )
                 viewer.user_scn.ngeom += 1
 
