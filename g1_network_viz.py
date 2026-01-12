@@ -216,6 +216,11 @@ class G1NetworkVisualizer:
         # Accumulate scans over time to build complete scan
         self.scan_buffer = []  # List of (time, points) tuples
         self.scan_buffer_max_age = 0.5  # Accumulate scans over 0.5 seconds
+        
+        # Robot path tracking
+        self.robot_path = []  # List of positions the robot has visited
+        self.last_path_update = 0
+        self.path_update_interval = 0.1  # Add path point every 100ms
 
         # UDP receiver
         if not demo_mode:
@@ -351,11 +356,15 @@ class G1NetworkVisualizer:
 
                     current_time = time.time()
                     with self.state_lock:
-                        # Only replace scan if we have points (prevents fading when stationary)
-                        # If new_points is empty, keep the existing scan
+                        # PERSISTENT MAP: Accumulate points instead of replacing
                         if new_points.size > 0:
-                            self.map_cloud = new_points.copy()
-                            self.map_point_ages = {}
+                            if self.map_cloud.size == 0:
+                                self.map_cloud = new_points.copy()
+                            else:
+                                # Merge new points with existing map
+                                self.map_cloud = np.vstack([self.map_cloud, new_points])
+                            
+                            # Update ages for new points
                             for pt in new_points:
                                 p_tuple = tuple(np.round(pt[:2], 2))
                                 self.map_point_ages[p_tuple] = current_time
@@ -531,6 +540,15 @@ class G1NetworkVisualizer:
             self.data.qpos[4] = self.imu_quaternion[1]  # x
             self.data.qpos[5] = self.imu_quaternion[2]  # y
             self.data.qpos[6] = self.imu_quaternion[3]  # z
+            
+            # Track robot path
+            current_time = time.time()
+            if current_time - self.last_path_update > self.path_update_interval:
+                self.robot_path.append(self.position[:2].copy())  # Store x, y
+                self.last_path_update = current_time
+                # Limit path length to last 1000 points
+                if len(self.robot_path) > 1000:
+                    self.robot_path.pop(0)
 
         # Ground the robot - compute FK and adjust height so feet touch ground
         # This MUST happen after joints are set but before we print/use the state
@@ -662,32 +680,56 @@ class G1NetworkVisualizer:
                     dist = np.linalg.norm(point_2d - robot_pos)
                     
                     # Color gradient: Red (close) -> Yellow (mid) -> Green (far)
-                    # 0-1m: Red to Yellow
-                    # 1-2m: Yellow to Green
-                    # 2-3.5m: Green
+                    # Point size: Smaller for close (show detail), larger for far
                     if dist < 1.0:
-                        # Red to Yellow (0-1m)
+                        # Red to Yellow (0-1m) - SMALL points for detail
                         t = dist  # 0 to 1
                         color = np.array([1.0, t, 0.0, alpha], dtype=np.float32)
+                        point_size = 0.008  # 0.8cm - fine detail
                     elif dist < 2.0:
-                        # Yellow to Green (1-2m)
+                        # Yellow to Green (1-2m) - MEDIUM points
                         t = dist - 1.0  # 0 to 1
                         color = np.array([1.0 - t, 1.0, 0.0, alpha], dtype=np.float32)
+                        point_size = 0.015  # 1.5cm - standard
                     else:
-                        # Green (2m+)
+                        # Green (2m+) - LARGE points
                         color = np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32)
+                        point_size = 0.025  # 2.5cm - chunky
                     
-                    # Project as a Vertical Box (Wall Segment)
+                    # Project as a Vertical Cylinder (Wall Segment) - forms more solid walls
                     viz_pt = np.array(point, dtype=np.float64)
                     viz_pt[2] = height / 2  # Center of wall
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_BOX,
-                        np.array([0.015, 0.015, height/2], dtype=np.float64),
+                        mujoco.mjtGeom.mjGEOM_CYLINDER,
+                        np.array([point_size * 1.2, 0, height/2], dtype=np.float64),  # Radius, unused, half-height
                         viz_pt,
                         np.eye(3, dtype=np.float64).flatten(),
                         color
+                    )
+                    viewer.user_scn.ngeom += 1
+            
+            # --- RENDER ROBOT PATH (Ground track) ---
+            if len(self.robot_path) > 1:
+                for i in range(len(self.robot_path) - 1):
+                    if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
+                        break
+                    
+                    # Draw small spheres along the path
+                    pos = self.robot_path[i]
+                    
+                    # Fade older path points
+                    age_factor = i / len(self.robot_path)  # 0 (old) to 1 (new)
+                    path_alpha = 0.3 + 0.4 * age_factor  # 0.3 to 0.7
+                    
+                    mujoco.mjv_initGeom(
+                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                        mujoco.mjtGeom.mjGEOM_SPHERE,
+                        np.array([0.02, 0, 0], dtype=np.float64),  # 2cm radius
+                        np.array([pos[0], pos[1], 0.01], dtype=np.float64),  # Just above ground
+                        np.eye(3, dtype=np.float64).flatten(),
+                        np.array([0.3, 0.6, 1.0, path_alpha], dtype=np.float32)  # Blue trail
                     )
                     viewer.user_scn.ngeom += 1
             

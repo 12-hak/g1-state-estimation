@@ -210,8 +210,8 @@ void G1Localizer::localizationLoop() {
             Eigen::Vector3f p_level = R_level_transform * p_body;
 
             // 4. Compression Filter: Ground (~-0.6m) to LiDAR base (~0.0m)
-            // floor_offset = -0.52m (catch everything > 8cm above ground)
-            if (p_level.z() < -0.52f || p_level.z() > 0.10f) continue;
+            // floor_offset = -0.45m (catch everything > 15cm above ground)
+            if (p_level.z() < -0.45f || p_level.z() > 0.10f) continue;
             
             // 5. Body Filtering (XY)
             float dist_xy = std::sqrt(p_level.x() * p_level.x() + p_level.y() * p_level.y());
