@@ -613,11 +613,10 @@ class G1NetworkVisualizer:
             if not hasattr(self, 'point_cloud'):
                 return
             
-            # --- RENDER MAP (Distance-based color gradient) ---
+            # --- RENDER MAP (Distance-based color gradient with adaptive detail) ---
             if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
-                # Target 1,500 wall segments (Draw basic structure)
-                step = max(1, len(self.map_cloud) // 1500)
-                map_subset = self.map_cloud[::step]
+                # Adaptive downsampling: Keep all close points, downsample far ones
+                # This preserves the high-resolution detail from the C++ adaptive grid
                 
                 # Render all points at full height (clean scan visualization)
                 height = 1.0
@@ -625,6 +624,34 @@ class G1NetworkVisualizer:
                 
                 # Get robot position for distance calculation
                 robot_pos = np.array([viz_pos_converged[0], viz_pos_converged[1]])
+                
+                # Separate points by distance for adaptive rendering
+                close_points = []  # <1m - render all
+                mid_points = []    # 1-2m - render 50%
+                far_points = []    # >2m - render 10%
+                
+                for point in self.map_cloud:
+                    point_2d = np.array([point[0], point[1]])
+                    dist = np.linalg.norm(point_2d - robot_pos)
+                    
+                    if dist < 1.0:
+                        close_points.append(point)
+                    elif dist < 2.0:
+                        mid_points.append(point)
+                    else:
+                        far_points.append(point)
+                
+                # Build adaptive subset
+                map_subset = []
+                map_subset.extend(close_points)  # All close points
+                map_subset.extend(mid_points[::2])  # Every 2nd mid-range point
+                map_subset.extend(far_points[::10])  # Every 10th far point
+                
+                # Cap at 3000 total for performance (was 1500)
+                if len(map_subset) > 3000:
+                    # If still too many, downsample uniformly
+                    step = len(map_subset) // 3000
+                    map_subset = map_subset[::step]
                 
                 for point in map_subset:
                     if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
