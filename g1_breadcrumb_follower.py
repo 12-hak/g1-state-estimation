@@ -324,21 +324,22 @@ class BreadcrumbFollower:
             # Always update obstacle distance for safety
             self.front_obstacle_dist = msg.range_obstacle[0]
             
-            # Only use sport mode for position if UDP localizer is NOT active
-            if self.received_udp:
-                return
-                
-            self.current_pos = np.array([msg.position[0], msg.position[1]])
-            self.current_yaw = self._get_yaw(msg.imu_state.quaternion)
-            
-            if self.is_recording:
-                self._add_breadcrumb()
+            # CRITICAL: We NO LONGER fall back to msg.position (DDS).
+            # Using DDS odometry while the G1Localizer is running causes a 
+            # massive coordinate jump that ruins the path.
+            # If UDP hasn't arrived yet, we leave current_pos as it is.
+            pass
 
     def _add_breadcrumb(self):
         # Should be called with lock held
+        # Protection: Never record if we haven't received a global pose yet
+        if not self.received_udp:
+            return
+
         if not self.recorded_path:
+            # Initial point
             self.recorded_path.append(np.array([self.current_pos[0], self.current_pos[1], self.current_yaw]))
-            print(f"[REC] Start Point: {self.recorded_path[-1]}")
+            print(f"[REC] Global Origin Set: {self.recorded_path[-1]}")
             return
 
         last = self.recorded_path[-1]
@@ -357,13 +358,18 @@ class BreadcrumbFollower:
                 print(f"[REC] Captured {len(self.recorded_path)} points...")
 
     def _toggle_recording(self):
-        self.is_recording = not self.is_recording
-        if self.is_recording:
-            self.recorded_path = []
-            self.is_playing = False
-            print("\n>>> RECORDING STARTED (Dist: 0.2m, Yaw: 0.1rad)")
-        else:
-            print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} breadcrumbs.")
+        with self.lock:
+            if not self.received_udp:
+                print("\n!!! REJECTED: No High-Precision Localizer Data. (Run run_node.sh first)")
+                return
+            
+            self.is_recording = not self.is_recording
+            if self.is_recording:
+                self.recorded_path = []
+                self.is_playing = False
+                print("\n>>> RECORDING STARTED (ICP GLOBAL FRAME)")
+            else:
+                print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} breadcrumbs.")
 
     def _start_playback(self):
         if self.is_playing:
@@ -373,6 +379,10 @@ class BreadcrumbFollower:
 
         if not self.recorded_path:
             print("\n!!! NO TRAIL RECORDED")
+            return
+            
+        if not self.received_udp:
+            print("\n!!! REJECTED: Localizer required for playback.")
             return
         
         self.is_recording = False
@@ -418,12 +428,21 @@ class BreadcrumbFollower:
             if not has_started_trail:
                 target = path[0]
                 dist_to_start = np.linalg.norm(target[:2] - pos)
-                if dist_to_start < 0.25:
+                
+                # If we are close to the start, start aligning to the recorded entry heading
+                if dist_to_start < 0.75:
+                    target_yaw = target[2]
+                else:
+                    diff = target[:2] - pos
+                    target_yaw = np.arctan2(diff[1], diff[0])
+                
+                # Tight threshold to "Lock In" to the start point
+                if dist_to_start < 0.20:
                     print(">>> ON TRAIL. Switching to precision following.")
                     has_started_trail = True
                 lookahead_idx = 0
             else:
-                # Sequential windowed search
+                # 3. Path Following (Sequential windowed search)
                 search_end = min(last_index + 10, path_len)
                 remaining_segment = path[last_index:search_end]
                 dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
@@ -438,16 +457,17 @@ class BreadcrumbFollower:
                         break
                 target = path[lookahead_idx]
 
-            dist_to_final = np.linalg.norm(path[-1, :2] - pos)
-            is_final_approach = has_started_trail and ((last_index > path_len * 0.92) or (lookahead_idx == path_len - 1 and dist_to_final < 0.6))
+                dist_to_final = np.linalg.norm(path[-1, :2] - pos)
+                is_final_approach = (last_index > path_len * 0.92) or (lookahead_idx == path_len - 1 and dist_to_final < 0.6)
 
-            # 3. Calculate Errors
-            diff = target[:2] - pos
-            if is_final_approach and dist_to_final < 0.3:
-                target_yaw = path[-1, 2] 
-            else:
-                target_yaw = np.arctan2(diff[1], diff[0])
+                # Heading calculation for path following
+                diff = target[:2] - pos
+                if is_final_approach and dist_to_final < 0.3:
+                    target_yaw = path[-1, 2] 
+                else:
+                    target_yaw = np.arctan2(diff[1], diff[0])
             
+            # Calculate final yaw error
             yaw_err = target_yaw - yaw
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
