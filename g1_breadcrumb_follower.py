@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import socket
+import struct
 import time
 import sys
-import struct
 import threading
 import numpy as np
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
