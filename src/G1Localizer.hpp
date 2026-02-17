@@ -112,6 +112,11 @@ private:
     
     // Status
     std::atomic<bool> is_stationary_;
+    
+    // Fused State for stabilization
+    Eigen::Quaternionf fused_q_;
+    float fused_yaw_;
+    bool fused_init_;
 };
 
 } // namespace g1_localization

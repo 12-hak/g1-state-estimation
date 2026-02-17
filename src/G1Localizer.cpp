@@ -37,6 +37,9 @@ G1Localizer::G1Localizer(const std::string& network_interface,
     state_.position_raw = state_.position;
     state_.icp_valid = false;
     state_.timestamp_us = 0;
+    fused_init_ = false;
+    fused_yaw_ = 0.0f;
+    fused_q_ = Eigen::Quaternionf::Identity();
     
     matcher_ = std::make_unique<ScanMatcher>();
     livox_ = std::make_unique<LivoxInterface>();
@@ -89,9 +92,46 @@ void G1Localizer::lowStateCallback(const void* message) {
     }
     last_update_time_ = now;
     
+    // YAW STABILIZATION (Complementary Filter)
+    // IMU Z-Yaw is integrated with Gyro Z to eliminate "twisting" jitter
+    float imu_yaw = std::atan2(2.0f*(q.w()*q.z() + q.x()*q.y()), 
+                              1.0f - 2.0f*(q.y()*q.y() + q.z()*q.z()));
+    
+    if (!fused_init_) {
+        fused_yaw_ = imu_yaw;
+        fused_init_ = true;
+    } else {
+        // 1. Prediction (Integrate Gyro)
+        // Note: gyro is in Body frame. For vertical yaw we use Z.
+        fused_yaw_ += gyro.z() * dt;
+        
+        // 2. Normalize
+        while(fused_yaw_ > M_PI) fused_yaw_ -= 2*M_PI;
+        while(fused_yaw_ < -M_PI) fused_yaw_ += 2*M_PI;
+        
+        // 3. Correction (Trust IMU for long-term drift)
+        float diff = imu_yaw - fused_yaw_;
+        if (diff > M_PI) diff -= 2*M_PI;
+        if (diff < -M_PI) diff += 2*M_PI;
+        
+        // Alpha 0.05: Very smooth, but follows absolute heading
+        fused_yaw_ += 0.05f * diff;
+    }
+
+    // Reconstruction of "Stable" Quaternion
+    // We keep the IMU's Roll/Pitch (Leveling) but use our Fused Yaw
+    float roll = std::atan2(2.0f*(q.w()*q.x() + q.y()*q.z()), 
+                           1.0f - 2.0f*(q.x()*q.x() + q.y()*q.y()));
+    float pitch = std::asin(2.0f*(q.w()*q.y() - q.z()*q.x()));
+    
+    Eigen::Quaternionf stable_q = 
+        Eigen::AngleAxisf(fused_yaw_, Eigen::Vector3f::UnitZ()) *
+        Eigen::AngleAxisf(pitch, Eigen::Vector3f::UnitY()) *
+        Eigen::AngleAxisf(roll, Eigen::Vector3f::UnitX());
+
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        state_.orientation = q;
+        state_.orientation = stable_q;
         state_.angular_velocity = gyro;
     }
 
@@ -184,7 +224,7 @@ void G1Localizer::localizationLoop() {
             smoothed_q = q_raw;
             first_run = false;
         } else {
-            smoothed_q = smoothed_q.slerp(0.6f, q_raw);
+            smoothed_q = smoothed_q.slerp(0.9f, q_raw);
         }
 
         // Pre-calculate rotation matrices at this state
