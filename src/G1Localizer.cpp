@@ -560,9 +560,15 @@ void G1Localizer::localizationLoop() {
         // 1. Moving (>0.2m) and ICP is valid
         // 2. Stationary Refresh (Every 1.0s)
         // 3. First scan
-        if (global_map_.empty() || (dist_moved > 0.2f && icp_ok) || stationary_update_ready) {
+        // Trigger Map Update if:
+        // 1. Moving (>0.2m) and ICP is valid AND error is very low (Strict Mapping)
+        // 2. Stationary Refresh (Every 1.0s)
+        // 3. First scan
+        bool high_confidence_icp = icp_ok && state_.icp_error < 0.07f;
+        
+        if (global_map_.empty() || (dist_moved > 0.2f && high_confidence_icp) || stationary_update_ready) {
             
-            float c = std::cos(corrected_yaw); // Use CORRECTED YAW
+            float c = std::cos(corrected_yaw);
             float s = std::sin(corrected_yaw);
             
             if (stationary_update_ready) {
@@ -578,7 +584,6 @@ void G1Localizer::localizationLoop() {
             
             std::vector<Eigen::Vector2f> new_world_points;
             for(const auto& p : base_frame_scan) {
-                // Use CORRECTED position and CORRECTED yaw for map building
                 float wx = p.x() * c - p.y() * s + corrected_pos.x();
                 float wy = p.x() * s + p.y() * c + corrected_pos.y();
                 new_world_points.emplace_back(wx, wy);
@@ -586,20 +591,21 @@ void G1Localizer::localizationLoop() {
 
             auto new_structure = ScanMatcher::computeStructure(new_world_points);
             
-            int points_added = 0;
+            // Deduplication against EVERYTHING in the current map
+            // Use 15cm threshold to keep walls sharp and lean
+            const float dedupe_dist_sq = 0.15f * 0.15f; 
+            
             for(const auto& kp : new_structure) {
-                bool close = false;
-                int check_range = std::min((int)global_map_.size(), 1000);
-                for(int j=0; j<check_range; ++j) {
-                    int idx = global_map_.size() - 1 - j;
-                    if ((global_map_[idx].pt - kp.pt).squaredNorm() < 0.01f) { // 10cm grid
-                        close = true; 
+                bool duplicate = false;
+                for(const auto& existing : global_map_) {
+                    if ((existing.pt - kp.pt).squaredNorm() < dedupe_dist_sq) {
+                        duplicate = true; 
                         break; 
                     }
                 }
-                if (!close) {
+                
+                if (!duplicate) {
                     global_map_.push_back(kp);
-                    points_added++;
                 }
             }
             
