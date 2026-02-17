@@ -5,6 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 #include "livox_lidar_def.h"
 #include "livox_lidar_api.h"
 
@@ -20,7 +21,7 @@ public:
     
     std::vector<Eigen::Vector3f> getLatestPointCloud();
     
-    // SDK Callbacks (must be static or friend)
+    // SDK Callbacks (must be static)
     static void PointCloudCallback(uint32_t handle, const uint8_t dev_type, LivoxLidarEthernetPacket* data, void* client_data);
     static void WorkModeCallback(livox_status status, uint32_t handle, LivoxLidarAsyncControlResponse *response, void *client_data);
     static void LidarInfoChangeCallback(const uint32_t handle, const LivoxLidarInfo* info, void* client_data);

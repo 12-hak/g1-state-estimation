@@ -1,6 +1,7 @@
 #include "LivoxInterface.hpp"
 #include <iostream>
 #include <cstring>
+#include <vector>
 
 namespace g1_localization {
 
@@ -14,9 +15,8 @@ void LivoxInterface::initialize() {
     if (running_) return;
     
     // Initialize Livox SDK
-    // Assumes config file in current directory
     if (!LivoxLidarSdkInit("g1_mid360_config.json")) {
-        std::cerr << "[LivoxInterface] ERROR: Livox SDK Init Failed. Check config file!" << std::endl;
+        std::cerr << "[LivoxInterface] ERROR: Livox SDK Init Failed." << std::endl;
         return;
     }
     
@@ -43,10 +43,9 @@ std::vector<Eigen::Vector3f> LivoxInterface::getLatestPointCloud() {
 
 void LivoxInterface::processPoint(float x, float y, float z) {
     std::lock_guard<std::mutex> lock(points_mutex_);
-    // Keep buffer manageable
-    if (points_buffer_.size() >= 5000) return; 
+    if (points_buffer_.size() >= 10000) return; 
     
-    // Convert mm to meters and apply basic transform (Upside Down Mount)
+    // Convert mm to meters and apply basic transform
     points_buffer_.emplace_back(x / 1000.0f, -y / 1000.0f, -z / 1000.0f);
 }
 
@@ -55,17 +54,13 @@ void LivoxInterface::processPoint(float x, float y, float z) {
 void LivoxInterface::WorkModeCallback(livox_status status, uint32_t handle,
                                       LivoxLidarAsyncControlResponse *response, void *client_data) {
     if (response != nullptr && response->ret_code == 0) {
-        std::cout << "[LivoxInterface] LiDAR set to NORMAL mode (Streaming)" << std::endl;
-    } else {
-        std::cerr << "[LivoxInterface] WARNING: Failed to set Work Mode!" << std::endl;
+        std::cout << "[LivoxInterface] LiDAR streaming started" << std::endl;
     }
 }
 
 void LivoxInterface::LidarInfoChangeCallback(const uint32_t handle, const LivoxLidarInfo* info, void* client_data) {
     if (info == nullptr) return;
-    std::cout << "[LivoxInterface] Connected: " << info->sn << " IP: " << info->lidar_ip << std::endl;
-    
-    // Auto-Start Streaming
+    std::cout << "[LivoxInterface] Connected: " << info->sn << std::endl;
     SetLivoxLidarWorkMode(handle, kLivoxLidarNormal, WorkModeCallback, nullptr);
 }
 
