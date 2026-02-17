@@ -1,9 +1,11 @@
-#!/usr/bin/env python3
 import socket
 import struct
 import time
 import sys
 import threading
+import json
+import http.server
+import socketserver
 import numpy as np
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_, unitree_go_msg_dds__SportModeState_
@@ -11,7 +13,184 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
+class VisualizerHandler(http.server.SimpleHTTPRequestHandler):
+    app_instance = None
+    
+    def do_GET(self):
+        if self.path == '/data':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            with self.app_instance.lock:
+                data = {
+                    "pos": self.app_instance.current_pos.tolist(),
+                    "yaw": float(self.app_instance.current_yaw),
+                    "path": [p.tolist() for p in self.app_instance.recorded_path],
+                    "recording": self.app_instance.is_recording,
+                    "playing": self.app_instance.is_playing,
+                    "udp_ok": self.app_instance.received_udp
+                }
+            self.wfile.write(json.dumps(data).encode())
+        elif self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(self.app_instance.HTML_PAGE.encode())
+        else:
+            self.send_error(404)
+
 class BreadcrumbFollower:
+    HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>G1 Path Visualizer</title>
+    <style>
+        body { margin: 0; background: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; overflow: hidden; }
+        #info { position: absolute; top: 20px; left: 20px; background: rgba(15, 23, 42, 0.8); padding: 20px; border-radius: 12px; border: 1px solid #334155; z-index: 10; backdrop-filter: blur(8px); }
+        .stat { margin-bottom: 8px; font-size: 14px; }
+        .val { font-weight: bold; color: #38bdf8; }
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 5px; }
+        .tag-on { background: #15803d; color: #bbf7d0; }
+        .tag-off { background: #334155; color: #94a3b8; }
+        #canvas { width: 100vw; height: 100vh; cursor: move; }
+        .legend { margin-top: 15px; font-size: 12px; display: flex; align-items: center; gap: 10px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #fff; }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h1>G1 Path Follower</h1>
+        <div class="stat">Status: <span id="status" class="val">Idle</span></div>
+        <div class="stat">Position: <span id="pos" class="val">0.0, 0.0</span></div>
+        <div class="stat">Points: <span id="pts" class="val">0</span></div>
+        <div id="tags"></div>
+        <div class="legend"><div class="dot" style="background:#38bdf8;box-shadow:0 0 5px #38bdf8"></div> Recorded Path</div>
+        <div class="legend"><div class="dot" style="background:#4ade80;box-shadow:0 0 5px #4ade80"></div> Robot Position</div>
+    </div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let data = { pos: [0,0], yaw: 0, path: [], recording:false, playing:false, udp_ok:false };
+        let offset = { x: 0, y: 0 };
+        let scale = 50; // pixels per meter
+        let autoZoom = true;
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            offset.x = canvas.width / 2;
+            offset.y = canvas.height / 2;
+        }
+        window.onresize = resize;
+        resize();
+
+        async function fetchData() {
+            try {
+                const res = await fetch('/data');
+                data = await res.json();
+                updateUI();
+            } catch (e) {}
+            setTimeout(fetchData, 100);
+        }
+
+        function updateUI() {
+            document.getElementById('pos').innerText = `${data.pos[0].toFixed(2)}, ${data.pos[1].toFixed(2)}`;
+            document.getElementById('pts').innerText = data.path.length;
+            document.getElementById('status').innerText = data.playing ? "PLAYING" : (data.recording ? "RECORDING" : "IDLE");
+            
+            let tags = "";
+            tags += `<span class="tag ${data.recording ? 'tag-on' : 'tag-off'}">REC</span>`;
+            tags += `<span class="tag ${data.playing ? 'tag-on' : 'tag-off'}">PLAY</span>`;
+            tags += `<span class="tag ${data.udp_ok ? 'tag-on' : 'tag-off'}">LOCALIZER</span>`;
+            document.getElementById('tags').innerHTML = tags;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Grid
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 1;
+            for(let x = (offset.x % scale); x < canvas.width; x += scale) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for(let y = (offset.y % scale); y < canvas.height; y += scale) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            // Path
+            if (data.path.length > 1) {
+                ctx.strokeStyle = '#38bdf8';
+                ctx.lineWidth = 3;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = '#38bdf8';
+                ctx.beginPath();
+                data.path.forEach((p, i) => {
+                    const x = offset.x + p[0] * scale;
+                    const y = offset.y - p[1] * scale;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            }
+
+            // Robot
+            const rx = offset.x + data.pos[0] * scale;
+            const ry = offset.y - data.pos[1] * scale;
+            
+            ctx.save();
+            ctx.translate(rx, ry);
+            ctx.rotate(-data.yaw); // Invert for canvas coords
+            
+            // Glow
+            ctx.fillStyle = '#4ade80';
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#4ade80';
+            ctx.beginPath();
+            ctx.arc(0, 0, 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Direction Triangle
+            ctx.beginPath();
+            ctx.moveTo(12, 0);
+            ctx.lineTo(-6, -6);
+            ctx.lineTo(-6, 6);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            requestAnimationFrame(draw);
+        }
+
+        fetchData();
+        draw();
+
+        // Drag to pan
+        let isPanning = false;
+        canvas.onmousedown = () => isPanning = true;
+        window.onmouseup = () => isPanning = false;
+        window.onmousemove = (e) => {
+            if (isPanning) {
+                offset.x += e.movementX;
+                offset.y += e.movementY;
+            }
+        };
+        canvas.onwheel = (e) => {
+            const zoom = e.deltaY > 0 ? 0.9 : 1.1;
+            scale *= zoom;
+        };
+    </script>
+</body>
+</html>
+    """
+
     def __init__(self, iface):
         self.iface = iface
         self.recorded_path = []
@@ -59,8 +238,14 @@ class BreadcrumbFollower:
         # Threads
         threading.Thread(target=self._udp_listener_loop, daemon=True).start()
         threading.Thread(target=self._diagnostic_loop, daemon=True).start()
+        
+        # Web Visualizer Server
+        VisualizerHandler.app_instance = self
+        self.server = socketserver.TCPServer(("0.0.0.0", 8080), VisualizerHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
         print(f"Breadcrumb Follower V2 Initialized on {self.iface}")
+        print("Visualizer available at http://localhost:8080")
         print("Listening for Remote on rt/lf/lowstate")
         print("Listening for Position on UDP:9870 (G1Localizer)")
         print("L1 + Up: Start/Stop Recording | L2 + Down: Playback")
