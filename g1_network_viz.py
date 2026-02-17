@@ -379,52 +379,42 @@ class G1NetworkVisualizer:
                                 print(f"[DEBUG]   Point range Y: {new_points[:,1].min():.2f} to {new_points[:,1].max():.2f}")
                                 print(f"[DEBUG]   Point range Z: {new_points[:,2].min():.2f} to {new_points[:,2].max():.2f}")
                             self._debug_first_map = False
-                        # PERSISTENT WALLS: Update wall segments with contradiction detection
+                        # PERSISTENT WALLS: Update wall segments with hysteresis
                         if new_points.size > 0:
-                            # Update wall segments
+                            robot_xy = self.position[:2]
+                            # 1. Update/Add segments from the map packet
+                            hit_keys = set()
                             for pt in new_points:
-                                # Grid key for deduplication (5cm grid)
-                                key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
+                                # Deduplicate robot's own body (Body Shadow Filter)
+                                if np.linalg.norm(pt[:2] - robot_xy) < 0.35: continue
                                 
-                                # Add or update wall segment: (point, last_time, hit_count, miss_count)
+                                key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
+                                hit_keys.add(key)
+                                
                                 if key in self.wall_segments:
                                     old_pt, old_time, hits, misses = self.wall_segments[key]
-                                    self.wall_segments[key] = (pt, current_time, min(hits + 1, 30), 0)
+                                    # G1M1 points are very high confidence (SLAM output)
+                                    self.wall_segments[key] = (pt, current_time, min(hits + 5, 50), 0)
                                 else:
-                                    self.wall_segments[key] = (pt, current_time, 1, 0)
+                                    self.wall_segments[key] = (pt, current_time, 5, 0)
                             
-                            # Check for contradictions: if robot passes through a wall, remove it
-                            robot_pos = self.position[:2] if hasattr(self, 'position') else np.array([0, 0])
-                            robot_key = (round(robot_pos[0] / 0.05), round(robot_pos[1] / 0.05))
-                            
-                            # Remove walls within 30cm of robot position (robot passed through)
-                            keys_to_remove = []
-                            for key, (pt, last_time, conf) in self.wall_segments.items():
-                                dist_to_robot = np.linalg.norm(pt[:2] - robot_pos)
-                                if dist_to_robot < 0.3:  # 30cm radius around robot
-                                    keys_to_remove.append(key)
-                            
-                            for key in keys_to_remove:
-                                del self.wall_segments[key]
-                            
-                            # Remove old walls that haven't been seen recently
-                            keys_to_remove = []
-                            for key, (pt, last_time, conf) in self.wall_segments.items():
-                                if current_time - last_time > self.wall_timeout:
-                                    keys_to_remove.append(key)
-                            
-                            for key in keys_to_remove:
-                                del self.wall_segments[key]
-                            
-                            # Build map cloud from wall segments for rendering
-                            # Default hit_count needed = 3 for G1M1 data
-                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 3]
-                            if self.map_cloud_data:
-                                self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
-                            else:
-                                self.map_cloud = np.empty((0, 3))
+                            # 2. Maintenance: Rebuild Map Cloud
+                            if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
+                            if current_time - self._last_map_maintenance > 0.1:
+                                # Remove points that are truly old (10 min) OR have too many misses
+                                expired_keys = [k for k, v in self.wall_segments.items() 
+                                               if (current_time - v[1] > self.wall_timeout) or (v[3] > 15)]
+                                for k in expired_keys: del self.wall_segments[k]
+                                
+                                # Rebuild
+                                self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 5]
+                                if self.map_cloud_data:
+                                    self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
+                                else:
+                                    self.map_cloud = np.empty((0, 3))
+                                self._last_map_maintenance = current_time
+
                             self.last_good_scan_time = current_time
-                        # Always update packet time to track when we last received data
                         self.last_map_packet_time = current_time
 
                 return
