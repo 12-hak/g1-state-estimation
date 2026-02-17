@@ -797,17 +797,28 @@ class G1NetworkVisualizer:
         radius = self.post_radius
         post_size = np.array([radius, radius, half_height], dtype=np.float64)
 
-        # --- LAYER 1: PERSISTENT MAP (The Sticky History) ---
+        # --- LAYER 1: PERSISTENT MAP (Solid Core) ---
         if self.show_walls and map_pts is not None:
+            # We now only render points that are ALREADY filtered to > 4.0 confidence
+            # So everything here is "Solid"
+            
+            # Simple downsample if too many points (limit to 10k)
+            step = 1
+            if len(map_pts) > 8000:
+                step = 2
+                
             dists = np.linalg.norm(map_pts[:, :2] - robot_pos_2d, axis=1)
-            for i in range(len(map_pts)):
+            
+            for i in range(0, len(map_pts), step):
                 if viewer.user_scn.ngeom >= max_geom: break
                 
                 point = map_pts[i]
-                persistence = map_meta[i][2] if i < len(map_meta) else 1
+                confidence = map_meta[i][2] if i < len(map_meta) else 5.0
                 
-                # Alpha based on persistence (Sticky fade)
-                alpha = min(persistence / 5.0, 1.0) * 0.6
+                # Alpha driven by confidence (4.0 to 10.0 mapping)
+                # 5.0 = 0.5 alpha
+                # 10.0 = 1.0 alpha
+                alpha = min(confidence / 10.0, 1.0)
                 
                 # Color gradient (Orange for near, Purple for far)
                 dist = dists[i]
