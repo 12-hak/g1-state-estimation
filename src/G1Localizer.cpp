@@ -328,7 +328,7 @@ void G1Localizer::localizationLoop() {
 
         // 2. Local Map Pruning (Performance Limit)
         // Reduced to 3.5m to keep the visualizer fast as requested.
-        const float map_radius = 3.5f; 
+        const float map_radius = 5.0f; 
         const float map_radius_sq = map_radius * map_radius;
         
         if (!global_map_.empty()) {
@@ -395,7 +395,7 @@ void G1Localizer::localizationLoop() {
             }
 
             // Keep last 2.5s of points for full 360 coverage
-            const int window_ms = 2500;
+            const int window_ms = 5000;
             while (!viz_window.empty() &&
                    std::chrono::duration_cast<std::chrono::milliseconds>(now - viz_window.front().first).count() > window_ms) {
                 viz_window.pop_front();
@@ -409,11 +409,11 @@ void G1Localizer::localizationLoop() {
                 
                 // Try to build snapshot from window
                 if (!viz_window.empty()) {
-                    // Grid dedupe (5cm) to avoid dense blobs and stay under UDP limits
-                    const float grid = 0.05f;
+                    // Grid dedupe (3cm) for higher fidelity
+                    const float grid = 0.03f;
                     std::unordered_map<uint64_t, Eigen::Vector2f> uniq;
-                    uniq.reserve(2000);
-                    const size_t max_points = 1500;
+                    uniq.reserve(3000);
+                    const size_t max_points = 2500;
 
                     for (const auto& item : viz_window) {
                         const auto& pt = item.second;
@@ -594,8 +594,8 @@ void G1Localizer::localizationLoop() {
             auto new_structure = ScanMatcher::computeStructure(new_world_points);
             
             // Deduplication against EVERYTHING in the current map
-            // Use 15cm threshold to keep walls sharp and lean
-            const float dedupe_dist_sq = 0.15f * 0.15f; 
+            // Use 5cm threshold for "High Fidelity" sharp walls
+            const float dedupe_dist_sq = 0.05f * 0.05f; 
             
             for(const auto& kp : new_structure) {
                 bool duplicate = false;
