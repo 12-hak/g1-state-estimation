@@ -38,10 +38,9 @@ message(STATUS "Using CycloneDDS path: ${CYCLONEDDS_PATH}")
 include_directories(${CYCLONEDDS_PATH}/include)
 include_directories(${CYCLONEDDS_PATH}/include/ddscxx)
 # Set RPATH to include SDK and CycloneDDS libraries for runtime loading
-# This prevents "symbol lookup error" by forcing the loader to use Unitree's libs
-# $ORIGIN allows finding libg1_localization_lib.so in the same directory
-set(CMAKE_INSTALL_RPATH "$ORIGIN;${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
-set(CMAKE_BUILD_RPATH "$ORIGIN;${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
+# Use \$ORIGIN (escaped) so CMake doesn't try to expand it as a variable
+set(CMAKE_INSTALL_RPATH "${CYCLONEDDS_PATH}/lib;${UNITREE_SDK_PATH}/lib;\$ORIGIN")
+set(CMAKE_BUILD_RPATH "${CYCLONEDDS_PATH}/lib;${UNITREE_SDK_PATH}/lib;\$ORIGIN")
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -65,8 +64,8 @@ set(SOURCES
 add_library(g1_localization_lib SHARED ${SOURCES})
 target_link_libraries(g1_localization_lib
     unitree_sdk2
-    ddsc
-    ddscxx
+    ${CYCLONEDDS_PATH}/lib/libddsc.so
+    ${CYCLONEDDS_PATH}/lib/libddscxx.so
     pthread
     livox_lidar_sdk_shared
 )
