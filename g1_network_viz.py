@@ -480,48 +480,79 @@ class G1NetworkVisualizer:
                         world_pts = (solid_points @ R.T) + self.position
                         robot_xy = self.position[:2]
                         
-                        # 3. Update persistence
-                        # hit_keys will skip decay for this packet
+                        # 3. PROBABILISTIC MAP UPDATE
+                        # Standard Log-Odds Approach:
+                        # - Hit: Increase confidence (Evidence of obstacle)
+                        # - Miss: Decrease confidence (Evidence of free space)
+                        # - Decay: None (Static world assumption)
+                        
+                        # A. Process HITS
                         hit_keys = set()
                         valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0)
+                        
+                        HIT_BONUS = 2.0
+                        MAX_CONFIDENCE = 10.0
                         
                         for pt in world_pts[valid_mask]:
                             key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
                             hit_keys.add(key)
                             
                             if key in self.wall_segments:
-                                mean_pt, last_time, persistence, misses = self.wall_segments[key]
-                                # HIT: Increase persistence (scale 1-5)
-                                self.wall_segments[key] = (pt, current_time, min(persistence + 1, 5), 0)
+                                mean_pt, last_time, confidence, _ = self.wall_segments[key]
+                                # Boost confidence
+                                new_conf = min(confidence + HIT_BONUS, MAX_CONFIDENCE)
+                                # Update position average with slight bias to new data
+                                new_pt = (mean_pt * 0.7 + pt * 0.3)
+                                self.wall_segments[key] = (new_pt, current_time, new_conf, 0)
                             else:
-                                # New discovery starts with persistence 1
-                                self.wall_segments[key] = (pt, current_time, 1, 0)
+                                # New discovery starts at 5.0 (Instant Render)
+                                self.wall_segments[key] = (pt, current_time, 5.0, 0)
 
-                        # 4. Periodic Maintenance (Smooth Decay & Rebuild)
-                        if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
+                        # B. Process MISSES (Visibility Clearing)
+                        # Only check cells that are:
+                        # 1. Within range of the lidar (4.0m)
+                        # 2. Within the angular field-of-view of this packet
+                        # 3. NOT hit by this packet
                         
-                        if current_time - self._last_map_maintenance > 0.2:
-                            # DECAY LOGIC: If a point hasn't been hit in 3 seconds, reduce persistence
-                            for k in list(self.wall_segments.keys()):
+                        scan_angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
+                        angle_min, angle_max = np.min(scan_angles), np.max(scan_angles)
+                        
+                        MISS_PENALTY = 0.5
+                        
+                        # Optimization: Only iterate if we have a valid wedge
+                        if angle_max - angle_min < np.pi: # Sanity check for wrapped scans
+                            keys_to_check = [k for k, v in self.wall_segments.items() 
+                                           if np.linalg.norm(v[0][:2] - robot_xy) < 4.0]
+                            
+                            for k in keys_to_check:
                                 if k in hit_keys: continue
                                 
-                                mean_pt, last_time, persistence, misses = self.wall_segments[k]
-                                if current_time - last_time > 3.0:
-                                    if persistence <= 1:
+                                pt_world = self.wall_segments[k][0]
+                                pt_rel = pt_world[:2] - robot_xy
+                                # Rotate to robot frame
+                                pt_robot = np.dot(R[:2, :2].T, pt_rel)
+                                pt_angle = np.arctan2(pt_robot[1], pt_robot[0])
+                                
+                                if angle_min <= pt_angle <= angle_max:
+                                    mean_pt, last_time, confidence, misses = self.wall_segments[k]
+                                    new_conf = confidence - MISS_PENALTY
+                                    
+                                    if new_conf <= 0.0:
                                         del self.wall_segments[k]
                                     else:
-                                        # Reduce persistence over time
-                                        self.wall_segments[k] = (mean_pt, current_time, persistence - 1, 0)
-                            
-                            # Rebuild map cloud for the visualizer
-                            # Only render points with persistence >= 1 (sticky)
-                            active_map = [v for v in self.wall_segments.values() if v[2] >= 1]
+                                        self.wall_segments[k] = (mean_pt, last_time, new_conf, misses + 1)
+                        
+                        # 4. Map Rebuild (Throttle to 10Hz)
+                        if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
+                        if current_time - self._last_map_maintenance > 0.1:
+                            # Only render points with High Confidence (> 5.0)
+                            # This creates a "Solid Core" map
+                            active_map = [v for v in self.wall_segments.values() if v[2] > 4.0]
                             if active_map:
                                 self.map_cloud_data = active_map
                                 self.map_cloud = np.array([v[0] for v in active_map])
                             else:
                                 self.map_cloud = np.empty((0, 3))
-                                
                             self._last_map_maintenance = current_time
 
             elif magic == b"G1S3" and len(data) >= PACKET_SIZE_V3:
