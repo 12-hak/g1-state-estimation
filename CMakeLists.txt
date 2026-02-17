@@ -37,13 +37,13 @@ set(CYCLONEDDS_PATH "/opt/unitree_robotics")
 message(STATUS "Using CycloneDDS path: ${CYCLONEDDS_PATH}")
 include_directories(${CYCLONEDDS_PATH}/include)
 include_directories(${CYCLONEDDS_PATH}/include/ddscxx)
-include_directories(${CYCLONEDDS_PATH}/include/ddsc)
-link_directories(${CYCLONEDDS_PATH}/lib)
-
 # Set RPATH to include SDK and CycloneDDS libraries for runtime loading
+# This prevents "symbol lookup error" by forcing the loader to use Unitree's libs
 set(CMAKE_INSTALL_RPATH "${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
-set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+set(CMAKE_BUILD_RPATH "${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 # Include directories
 include_directories(
@@ -66,7 +66,6 @@ target_link_libraries(g1_localization_lib
     unitree_sdk2
     ddsc
     ddscxx
-    cyclonedds
     pthread
     livox_lidar_sdk_shared
 )
