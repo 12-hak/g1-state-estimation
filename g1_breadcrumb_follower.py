@@ -200,14 +200,15 @@ class BreadcrumbFollower:
         path = list(self.recorded_path)
         
         # Controller Gains
-        K_LINEAR = 0.6
-        K_ANGULAR = 1.5
+        K_LINEAR = 0.7
+        K_ANGULAR = 1.8
         MAX_VEL = 0.5
         MAX_YAW = 1.0
         
-        # Thresholds (Optimized: tolerance for speed, precision for rotation)
-        DIST_THRESHOLD = 0.35 
-        YAW_THRESHOLD = 0.12   
+        # Thresholds
+        WALK_DIST_THRESHOLD = 0.70  # Very loose for fluid motion
+        ROT_DIST_THRESHOLD = 0.30   # Required for final point or turn-in-place
+        YAW_THRESHOLD = 0.10        # 6 degrees for accurate rotation
         
         last_debug = 0
         print(">>> Starting Playback Thread...")
@@ -224,12 +225,7 @@ class BreadcrumbFollower:
                 time.sleep(0.5)
                 continue
 
-            # 1. Calculate Errors
-            diff = target[:2] - pos
-            dist = np.linalg.norm(diff)
-            
-            # Determine if this point requires strict orientation alignment
-            # (It's the last point, or the next point's position is identical)
+            # 1. Logic: Is this a precision waypoint?
             is_last = (target_index == len(path) - 1)
             is_rotation_point = False
             if not is_last:
@@ -237,11 +233,15 @@ class BreadcrumbFollower:
                 if np.linalg.norm(next_pt[:2] - target[:2]) < 0.1:
                     is_rotation_point = True
 
-            # Use recorded yaw for rotation points/end, otherwise aim at point
-            if dist < DIST_THRESHOLD:
-                target_yaw = target[2]
-            else:
+            # 2. Calculate Errors
+            diff = target[:2] - pos
+            dist = np.linalg.norm(diff)
+            
+            # Heading: Aim at the point if far, use recorded yaw if close
+            if dist > 0.4:
                 target_yaw = np.arctan2(diff[1], diff[0])
+            else:
+                target_yaw = target[2]
             
             yaw_err = target_yaw - yaw
             while yaw_err > np.pi: yaw_err -= 2*np.pi
@@ -249,32 +249,33 @@ class BreadcrumbFollower:
             
             # Rate-limited debug
             if time.time() - last_debug > 2.0:
-                pt_type = "ROT" if is_rotation_point or is_last else "WALK"
+                pt_type = "PRECISION" if is_rotation_point or is_last else "FLUID"
                 print(f"[DEBUG] Target {target_index} ({pt_type}): dist={dist:.2f}m, yaw_err={yaw_err:.2f}rad")
                 last_debug = time.time()
 
-            # 2. Check Arrival Logic
-            # If it's just a walking waypoint, passing the DIST threshold is enough
-            if dist < DIST_THRESHOLD:
-                if not (is_last or is_rotation_point):
-                    print(f">>> PASSED breadcrumb {target_index}")
+            # 3. Check Transition
+            if is_last or is_rotation_point:
+                if dist < ROT_DIST_THRESHOLD and abs(yaw_err) < YAW_THRESHOLD:
+                    print(f">>> ALIGNED with precision point {target_index}")
                     target_index += 1
                     continue
-                elif abs(yaw_err) < YAW_THRESHOLD:
-                    print(f">>> ALIGNED with breadcrumb {target_index}")
+            else:
+                if dist < WALK_DIST_THRESHOLD:
+                    print(f">>> PASSED waypoint {target_index}")
                     target_index += 1
                     continue
                 
-            # 3. Control Logic
-            if abs(yaw_err) > 0.5: # Prioritize alignment
+            # 4. Control Blend
+            # If yaw error > 45 degrees, turn on spot
+            if abs(yaw_err) > 0.8:
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             else:
-                if dist > DIST_THRESHOLD:
-                    vx = np.clip(K_LINEAR * dist, 0.1, MAX_VEL)
+                if dist > (ROT_DIST_THRESHOLD if (is_last or is_rotation_point) else 0.1):
+                    # Higher min velocity (0.2) to prevent stalling
+                    vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
                 else:
-                    vx = 0.0 # Orientation fine-tuning for rotation points
-                    
+                    vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
             self.loco_client.Move(vx, 0.0, vyaw)
