@@ -199,23 +199,30 @@ class BreadcrumbFollower:
         # 1. Path Setup
         path = np.array(self.recorded_path)
         path_len = len(path)
-        if path_len < 5:
-            print(">>> ERROR: Path too short to playback.")
+        if path_len < 3:
+            print(">>> ERROR: Path too short.")
             self.is_playing = False
             return
 
         # Controller Parameters
-        LOOKAHEAD_DIST = 0.6   
+        LOOKAHEAD_DIST = 0.5   
         MAX_VEL = 0.5          
         MAX_YAW_VEL = 1.0      
-        FINAL_DIST_TOL = 0.25  
-        FINAL_YAW_TOL = 0.20   
+        FINAL_DIST_TOL = 0.20  
+        FINAL_YAW_TOL = 0.15   
         
+        # We start from the absolute beginning of the trail
         last_index = 0
         last_debug = 0
+        has_started_trail = False
         
         print(f">>> STARTING WAYPOINT NAV: {path_len} points")
-        print(f">>> Final Target Position: {path[-1, :2]}")
+        print(f">>> Start Position: {path[0, :2]}")
+        print(f">>> Final Destination: {path[-1, :2]}")
+        if self.received_udp:
+            print(">>> Navigation Source: High-Precision Localizer (UDP)")
+        else:
+            print(">>> WARNING: Using SLAM-less Fallback (DDS). Position drift likely.")
 
         while self.is_playing:
             with self.lock:
@@ -229,33 +236,39 @@ class BreadcrumbFollower:
                 time.sleep(0.5)
                 continue
 
-            # 2. Find Look-ahead Point with Progress Guard
-            # Search only within a window of 15 points ahead of current to prevent "shortcuts"
-            search_end = min(last_index + 15, path_len)
-            remaining_segment = path[last_index:search_end]
-            dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
-            closest_in_window = np.argmin(dists)
-            last_index = last_index + closest_in_window
-            
-            # Look ahead for steering
-            lookahead_idx = last_index
-            for i in range(last_index, path_len):
-                d = np.linalg.norm(path[i, :2] - pos)
-                lookahead_idx = i
-                if d > LOOKAHEAD_DIST:
-                    break
-            
-            target = path[lookahead_idx]
-            dist_to_final = np.linalg.norm(path[-1, :2] - pos)
-            
-            # FINAL APPROACH GUARD: Must be at the end of the index list
-            # This prevents premature exit if the end point is physically near the start
-            is_final_approach = (last_index > path_len * 0.85) or (lookahead_idx == path_len - 1 and dist_to_final < 1.0)
+            # 2. Strict Start Logic: Must go to Point 0 first
+            if not has_started_trail:
+                target = path[0]
+                dist_to_start = np.linalg.norm(target[:2] - pos)
+                if dist_to_start < 0.3:
+                    print(">>> REACHED START OF TRAIL. Switching to path following.")
+                    has_started_trail = True
+                lookahead_idx = 0
+            else:
+                # 3. Path Following (Sequential search)
+                # Search window ahead of current progress
+                search_end = min(last_index + 15, path_len)
+                remaining_segment = path[last_index:search_end]
+                dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
+                closest_in_window = np.argmin(dists)
+                last_index = last_index + closest_in_window
+                
+                # Look ahead for steering
+                lookahead_idx = last_index
+                for i in range(last_index, path_len):
+                    d = np.linalg.norm(path[i, :2] - pos)
+                    lookahead_idx = i
+                    if d > LOOKAHEAD_DIST:
+                        break
+                target = path[lookahead_idx]
 
-            # 3. Calculate Steering
+            dist_to_final = np.linalg.norm(path[-1, :2] - pos)
+            is_final_approach = has_started_trail and ((last_index > path_len * 0.9) or (lookahead_idx == path_len - 1 and dist_to_final < 0.8))
+
+            # 4. Calculate Steering
             diff = target[:2] - pos
             if is_final_approach and dist_to_final < FINAL_DIST_TOL:
-                target_yaw = path[-1, 2] # Align to final recorded heading
+                target_yaw = path[-1, 2] # Final recorded pose
             else:
                 target_yaw = np.arctan2(diff[1], diff[0])
             
@@ -263,13 +276,13 @@ class BreadcrumbFollower:
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
 
-            # 4. Mission Termination (Strictly guarded)
+            # 5. Mission Termination
             if is_final_approach and dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
-                print(f">>> SUCCESS: Destination reached at index {last_index}/{path_len}")
+                print(f">>> SUCCESS: Destination reached.")
                 break
 
-            # 5. Velocity Control
-            if abs(yaw_err) > 0.8: # Sharp turn
+            # 6. Velocity Control
+            if abs(yaw_err) > 0.8: # Aligning
                 vx = 0.0
                 vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
             else:
@@ -277,7 +290,6 @@ class BreadcrumbFollower:
                 if is_final_approach:
                     vx = np.clip(0.6 * dist_to_final, 0.15, MAX_VEL)
                 else:
-                    # Minimum 0.2 to ensure movement
                     vx = np.clip(MAX_VEL * alignment_factor, 0.2, MAX_VEL)
                 
                 vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
@@ -285,7 +297,7 @@ class BreadcrumbFollower:
             self.loco_client.Move(vx, 0.0, vyaw)
             
             if time.time() - last_debug > 2.0:
-                print(f"[NAV] Pts: {last_index}/{path_len} | Dist: {dist_to_final:.2f}m | YawErr: {yaw_err:.2f}")
+                print(f"[NAV] Progress: {last_index}/{path_len} | DistToGoal: {dist_to_final:.2f}m")
                 last_debug = time.time()
                 
             time.sleep(0.05)
