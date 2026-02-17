@@ -39,8 +39,9 @@ include_directories(${CYCLONEDDS_PATH}/include)
 include_directories(${CYCLONEDDS_PATH}/include/ddscxx)
 # Set RPATH to include SDK and CycloneDDS libraries for runtime loading
 # This prevents "symbol lookup error" by forcing the loader to use Unitree's libs
-set(CMAKE_INSTALL_RPATH "${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
-set(CMAKE_BUILD_RPATH "${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
+# $ORIGIN allows finding libg1_localization_lib.so in the same directory
+set(CMAKE_INSTALL_RPATH "$ORIGIN;${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
+set(CMAKE_BUILD_RPATH "$ORIGIN;${UNITREE_SDK_PATH}/lib;${CYCLONEDDS_PATH}/lib")
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
