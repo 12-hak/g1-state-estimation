@@ -165,8 +165,8 @@ class BreadcrumbFollower:
         while yaw_err < -np.pi: yaw_err += 2*np.pi
         yaw_diff = abs(yaw_err)
 
-        # Trigger on small distance (0.1m) or rotation (0.1 rad)
-        if dist > 0.1 or yaw_diff > 0.1:
+        # Trigger on 0.2m movement or 0.1 rad rotation
+        if dist > 0.2 or yaw_diff > 0.1:
             self.recorded_path.append(np.array([self.current_pos[0], self.current_pos[1], self.current_yaw]))
             if len(self.recorded_path) % 10 == 0:
                 print(f"[REC] Captured {len(self.recorded_path)} points...")
@@ -176,7 +176,7 @@ class BreadcrumbFollower:
         if self.is_recording:
             self.recorded_path = []
             self.is_playing = False
-            print("\n>>> RECORDING STARTED (High Precision Mode)")
+            print("\n>>> RECORDING STARTED (Dist: 0.2m, Yaw: 0.1rad)")
         else:
             print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} breadcrumbs.")
 
@@ -199,15 +199,15 @@ class BreadcrumbFollower:
         target_index = 0
         path = list(self.recorded_path)
         
-        # Controller Gains
+        # Controller Gains (Higher angular gain for precision)
         K_LINEAR = 0.6
-        K_ANGULAR = 1.2
+        K_ANGULAR = 1.5
         MAX_VEL = 0.5
         MAX_YAW = 1.0
         
-        # Thresholds (Relaxed for reliability)
-        DIST_THRESHOLD = 0.30 
-        YAW_THRESHOLD = 0.25   
+        # Thresholds (Optimized: tolerance for position, accuracy for yaw)
+        DIST_THRESHOLD = 0.25 
+        YAW_THRESHOLD = 0.10   
         
         last_debug = 0
         print(">>> Starting Playback Thread...")
@@ -228,6 +228,7 @@ class BreadcrumbFollower:
             diff = target[:2] - pos
             dist = np.linalg.norm(diff)
             
+            # If we are close enough in distance, focus on recorded yaw
             if dist < DIST_THRESHOLD:
                 target_yaw = target[2]
             else:
@@ -249,16 +250,15 @@ class BreadcrumbFollower:
                 continue
                 
             # 3. Control Logic
-            if abs(yaw_err) > 0.6: # Large heading error: Rotate only
+            if abs(yaw_err) > 0.5: # Prioritize alignment
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             else:
                 # Move towards target
                 if dist > DIST_THRESHOLD:
-                    # Slow down as we get closer (min 0.1 for traction)
                     vx = np.clip(K_LINEAR * dist, 0.1, MAX_VEL)
                 else:
-                    vx = 0.0 # Orientation fine-tuning
+                    vx = 0.0 # Just fine-tune rotation
                     
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
