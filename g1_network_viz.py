@@ -481,10 +481,7 @@ class G1NetworkVisualizer:
                         robot_xy = self.position[:2]
                         
                         # 3. Update persistence
-                        # Get angles of active points for wedge decay
-                        scan_angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
-                        angle_min, angle_max = np.min(scan_angles), np.max(scan_angles)
-                        
+                        # hit_keys will skip decay for this packet
                         hit_keys = set()
                         valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0)
                         
@@ -493,43 +490,38 @@ class G1NetworkVisualizer:
                             hit_keys.add(key)
                             
                             if key in self.wall_segments:
-                                mean_pt, last_time, persistence, _unused = self.wall_segments[key]
-                                # Increase persistence on hit, max 10
-                                self.wall_segments[key] = (pt, current_time, min(persistence + 1, 10), 0)
+                                mean_pt, last_time, persistence, misses = self.wall_segments[key]
+                                # HIT: Increase persistence (scale 1-5)
+                                self.wall_segments[key] = (pt, current_time, min(persistence + 1, 5), 0)
                             else:
-                                # New discovery starts with persistence 3
-                                self.wall_segments[key] = (pt, current_time, 3, 0)
+                                # New discovery starts with persistence 1
+                                self.wall_segments[key] = (pt, current_time, 1, 0)
 
-                        # 4. Decay persistence for points in wedge NOT hit
-                        keys_in_range = [k for k, v in self.wall_segments.items() 
-                                       if np.linalg.norm(v[0][:2] - robot_xy) < 4.0]
-                        
-                        for k in keys_in_range:
-                            if k in hit_keys: continue
-                            
-                            pt_world = self.wall_segments[k][0]
-                            pt_rel = pt_world[:2] - robot_xy
-                            # Rotate rel point back to robot frame for wedge check
-                            pt_robot_xy = np.dot(R[:2, :2].T, pt_rel)
-                            pt_angle = np.arctan2(pt_robot_xy[1], pt_robot_xy[0])
-                            
-                            if angle_min <= pt_angle <= angle_max:
-                                mean_pt, last_time, persistence, _ = self.wall_segments[k]
-                                if persistence <= 1:
-                                    del self.wall_segments[k]
-                                else:
-                                    # Slowly decay persistence
-                                    self.wall_segments[k] = (mean_pt, last_time, persistence - 1, 0)
-                        
-                        # 5. Maintenance
+                        # 4. Periodic Maintenance (Smooth Decay & Rebuild)
                         if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
-                        if current_time - self._last_map_maintenance > 0.1:
-                            # Only render points with persistence >= 3
-                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 3]
-                            if self.map_cloud_data:
-                                self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
+                        
+                        if current_time - self._last_map_maintenance > 0.2:
+                            # DECAY LOGIC: If a point hasn't been hit in 3 seconds, reduce persistence
+                            for k in list(self.wall_segments.keys()):
+                                if k in hit_keys: continue
+                                
+                                mean_pt, last_time, persistence, misses = self.wall_segments[k]
+                                if current_time - last_time > 3.0:
+                                    if persistence <= 1:
+                                        del self.wall_segments[k]
+                                    else:
+                                        # Reduce persistence over time
+                                        self.wall_segments[k] = (mean_pt, current_time, persistence - 1, 0)
+                            
+                            # Rebuild map cloud for the visualizer
+                            # Only render points with persistence >= 1 (sticky)
+                            active_map = [v for v in self.wall_segments.values() if v[2] >= 1]
+                            if active_map:
+                                self.map_cloud_data = active_map
+                                self.map_cloud = np.array([v[0] for v in active_map])
                             else:
                                 self.map_cloud = np.empty((0, 3))
+                                
                             self._last_map_maintenance = current_time
 
             elif magic == b"G1S3" and len(data) >= PACKET_SIZE_V3:
@@ -742,185 +734,112 @@ class G1NetworkVisualizer:
     
     def _render_debug_viz(self, viewer):
         """Render walls/obstacles as thin vertical posts and position markers."""
-        # Reset geom counter for custom rendering
-        viewer.user_scn.ngeom = 0
-        max_geom = viewer.user_scn.maxgeom
+        # 1. Thread-safe snapshot of the state
+        with self.state_lock:
+            if not self.state_received: return
+            viz_pos = self.position.copy()
+            viz_quat = self.imu_quaternion.copy()
             
-        # Converged (ICP) position
-        viz_pos_converged = self.position
+            # Snapshots of clouds
+            active_raw = None
+            if hasattr(self, 'point_cloud') and self.point_cloud.size > 0:
+                active_raw = self.point_cloud.copy()
+                
+            map_pts = None
+            map_meta = None
+            if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
+                map_pts = self.map_cloud.copy()
+                map_meta = self.map_cloud_data[:] # Metadata (persistence)
         
-        # Pre-compute identity rotation (used for all vertical posts)
+        # 2. Prepare Scene
+        viewer.user_scn.ngeom = 0
+        if viewer.user_scn.maxgeom < 10000:
+            viewer.user_scn.maxgeom = 10000
+            viewer.user_scn.geoms = mujoco.MjvGeom(10000)
+        max_geom = viewer.user_scn.maxgeom
         identity_rot = np.eye(3, dtype=np.float64).flatten()
         
-        with self.state_lock:
-            # Check if we have any data
-            has_point_cloud = hasattr(self, 'point_cloud') and self.point_cloud.size > 0
-            has_map_cloud = hasattr(self, 'map_cloud') and self.map_cloud.size > 0
-            
-            if not (has_point_cloud or has_map_cloud):
-                return
-            
-            # Rendering parameters
-            height = self.wall_height
-            half_height = height / 2.0
-            radius = self.post_radius
-            robot_pos_2d = np.array([viz_pos_converged[0], viz_pos_converged[1]])
+        # Pre-calc robot 2D pos and rendering params
+        robot_pos_2d = viz_pos[:2]
+        height = self.wall_height
+        half_height = height / 2.0
+        radius = self.post_radius
+        post_size = np.array([radius, radius, half_height], dtype=np.float64)
 
-            # --- 1. RENDER PERSISTENT MAP (The "History") ---
-            if self.show_walls and has_map_cloud:
-                map_cloud = self.map_cloud
-                map_data = getattr(self, 'map_cloud_data', [])
+        # --- LAYER 1: PERSISTENT MAP (The Sticky History) ---
+        if self.show_walls and map_pts is not None:
+            dists = np.linalg.norm(map_pts[:, :2] - robot_pos_2d, axis=1)
+            for i in range(len(map_pts)):
+                if viewer.user_scn.ngeom >= max_geom: break
                 
-                # Distance calculation for downsampling
-                dists = np.linalg.norm(map_cloud[:, :2] - robot_pos_2d, axis=1)
+                point = map_pts[i]
+                persistence = map_meta[i][2] if i < len(map_meta) else 1
                 
-                # Adaptive downsampling
-                close_idx = np.where(dists < 2.5)[0][::2]
-                mid_idx = np.where((dists >= 2.5) & (dists < 5.0))[0][::5]
-                far_idx = np.where(dists >= 5.0)[0][::15]
-                render_idx = np.concatenate([close_idx, mid_idx, far_idx])
+                # Alpha based on persistence (Sticky fade)
+                alpha = min(persistence / 5.0, 1.0) * 0.6
                 
-                post_size = np.array([radius, radius, half_height], dtype=np.float64)
+                # Color gradient (Orange for near, Purple for far)
+                dist = dists[i]
+                if dist < 2.5:
+                    color = np.array([1.0, 0.4, 0.0, alpha], dtype=np.float32)
+                else:
+                    color = np.array([0.4, 0.0, 0.6, alpha * 0.8], dtype=np.float32)
                 
-                for idx in render_idx:
-                    if viewer.user_scn.ngeom >= max_geom:
-                        break
-                    
-                    point = map_cloud[idx]
-                    dist = dists[idx]
-                    hit_count = map_data[idx][2] if idx < len(map_data) else 10
-                    
-                    # ALPHA based on hit count: More hits = more solid
-                    # 1 hit = 0.1 alpha (hidden), 3 hits = 0.3, 10+ hits = 0.6
-                    alpha_base = min(hit_count / 15.0, 0.6)
-                    
-                    if dist < 2.0:
-                        color = np.array([1.0, 0.4, 0.0, alpha_base], dtype=np.float32) 
-                    else:
-                        color = np.array([0.4, 0.0, 0.6, alpha_base * 0.8], dtype=np.float32)
-                    
-                    post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_BOX,
-                        post_size,
-                        post_pos,
-                        identity_rot,
-                        color
-                    )
-                    viewer.user_scn.ngeom += 1
-
-            # --- 2. RENDER ACTIVE SCAN (The "High Refresh" Scanner) ---
-            if self.show_walls and has_point_cloud:
-                # Transform point_cloud from robot frame to world frame
-                # Using MuJoCo's computed xmat/xpos for the base body
-                base_xmat = self.data.xmat[self.base_body_id].reshape(3, 3)
-                base_xpos = self.data.xpos[self.base_body_id]
-                
-                # Transform all points: P_world = R_base * P_robot + T_base
-                transformed_points = (self.point_cloud @ base_xmat.T) + base_xpos
-                
-                # Render active scan with bright colors
-                # No downsampling for the active scan slice (usually 100-300 points)
-                active_post_size = np.array([radius * 1.2, radius * 1.2, half_height], dtype=np.float64)
-                
-                for point in transformed_points:
-                    if viewer.user_scn.ngeom >= max_geom:
-                        break
-                    
-                    # Bright "Electric" colors for active scan
-                    color = np.array([0.0, 1.0, 1.0, 0.9], dtype=np.float32) # Bright Cyan
-                    
-                    post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_BOX,
-                        active_post_size,
-                        post_pos,
-                        identity_rot,
-                        color
-                    )
-                    viewer.user_scn.ngeom += 1
-
-                if self._debug_first_render:
-                    print(f"[DEBUG] Map: {len(self.map_cloud)} pts, Active: {len(transformed_points)} pts")
-                    self._debug_first_render = False
-            
-            # --- RENDER ROBOT PATH (Connected line and/or Breadcrumbs) ---
-            if len(self.robot_path) > 1 and viewer.user_scn.ngeom < max_geom:
-                # Downsample path
-                step = max(1, len(self.robot_path) // 200)
-                path_subset = self.robot_path[::step]
-                
-                # Draw breadcrumbs (Spheres) if enabled
-                if self.show_breadcrumbs:
-                    for i, pos in enumerate(path_subset):
-                        if viewer.user_scn.ngeom >= max_geom:
-                            break
-                        age_factor = i / len(path_subset)
-                        mujoco.mjv_initGeom(
-                            viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                            mujoco.mjtGeom.mjGEOM_SPHERE,
-                            np.array([0.03, 0, 0], dtype=np.float64),
-                            np.array([pos[0], pos[1], 0.015], dtype=np.float64),
-                            identity_rot,
-                            np.array([0.2, 0.8, 1.0, 0.3 + 0.5 * age_factor], dtype=np.float32)
-                        )
-                        viewer.user_scn.ngeom += 1
-                
-                # Draw connected line segments
-                for i in range(len(path_subset) - 1):
-                    if viewer.user_scn.ngeom >= max_geom:
-                        break
-                    
-                    pos1 = path_subset[i]
-                    pos2 = path_subset[i + 1]
-                    
-                    # Calculate midpoint and direction for capsule
-                    midpoint = (pos1 + pos2) / 2
-                    direction = pos2 - pos1
-                    length = np.linalg.norm(direction)
-                    
-                    if length < 0.001:  # Skip very short segments
-                        continue
-                    
-                    # Normalize direction
-                    direction = direction / length
-                    
-                    # Rotation from Z to path direction
-                    angle = np.arctan2(direction[1], direction[0])
-                    rot_mat = np.array([
-                        [np.cos(angle), -np.sin(angle), 0],
-                        [np.sin(angle), np.cos(angle), 0],
-                        [0, 0, 1]
-                    ], dtype=np.float64)
-                    
-                    # Fade older path segments
-                    age_factor = i / len(path_subset)  # 0 (old) to 1 (new)
-                    path_alpha = 0.4 + 0.4 * age_factor  # 0.4 to 0.8
-                    
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                        mujoco.mjtGeom.mjGEOM_CAPSULE,
-                        np.array([0.015, 0, length/2], dtype=np.float64),  # radius, unused, half-length
-                        np.array([midpoint[0], midpoint[1], 0.01], dtype=np.float64),
-                        rot_mat.flatten(),
-                        np.array([0.2, 0.5, 1.0, path_alpha], dtype=np.float32)  # Blue trail
-                    )
-                    viewer.user_scn.ngeom += 1
-            
-            # --- RENDER CONVERGED DOT (Green) ---
-            if viewer.user_scn.ngeom < max_geom:
-                # Large distinct dot for the single source of truth
-                mujoco.mjv_initGeom(
-                    viewer.user_scn.geoms[viewer.user_scn.ngeom],
-                    mujoco.mjtGeom.mjGEOM_SPHERE,
-                    np.array([0.06, 0, 0], dtype=np.float64),
-                    np.array([viz_pos_converged[0], viz_pos_converged[1], 0.02], dtype=np.float64),
-                    identity_rot,
-                    np.array([0, 1, 0, 0.8], dtype=np.float32)  # Bright Solid Green
-                )
+                post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
+                mujoco.mjv_initGeom(viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                                   mujoco.mjtGeom.mjGEOM_BOX, post_size, post_pos, identity_rot, color)
                 viewer.user_scn.ngeom += 1
+
+        # --- LAYER 2: ACTIVE SCAN (The High Refresh Cyan Slice) ---
+        if self.show_walls and active_raw is not None:
+            # Transform active scan slice to world frame using robot's current pose
+            w, x, y, z = viz_quat
+            R = np.array([
+                [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
+                [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+                [2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y)]
+            ])
+            active_world = (active_raw @ R.T) + viz_pos
+            
+            active_post_size = np.array([radius * 1.1, radius * 1.1, half_height], dtype=np.float64)
+            active_color = np.array([0.0, 1.0, 1.0, 0.9], dtype=np.float32) # Bright Cyan
+            
+            for point in active_world:
+                if viewer.user_scn.ngeom >= max_geom: break
+                # Height filter for active scan visibility
+                if point[2] < 0.15 or point[2] > 2.0: continue
+                
+                post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
+                mujoco.mjv_initGeom(viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                                   mujoco.mjtGeom.mjGEOM_BOX, active_post_size, post_pos, identity_rot, active_color)
+                viewer.user_scn.ngeom += 1
+
+        # --- LAYER 4: ROBOT PATH (Breadcrumbs) ---
+        if self.show_breadcrumbs and len(self.robot_path) > 1:
+            # Downsample path for performance (render every 5th point)
+            path_pts = self.robot_path[::5] 
+            path_size = np.array([radius * 0.5, radius * 0.5, radius * 0.5], dtype=np.float64)
+            
+            for i, p_pos in enumerate(path_pts):
+                if viewer.user_scn.ngeom >= max_geom: break
+                
+                # Fading effect for older crumbs
+                age_ratio = (i / len(path_pts))
+                path_color = np.array([1.0, 1.0, 1.0, 0.2 + 0.3 * age_ratio], dtype=np.float32) # Faded white
+                
+                mujoco.mjv_initGeom(viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                                   mujoco.mjtGeom.mjGEOM_SPHERE, path_size, np.array([p_pos[0], p_pos[1], 0.015]), identity_rot, path_color)
+                viewer.user_scn.ngeom += 1
+
+        # --- LAYER 5: ROBOT CONVERGED POSITION (Green Sphere) ---
+        if viewer.user_scn.ngeom < max_geom:
+            sphere_pos = np.array([viz_pos[0], viz_pos[1], 0.1], dtype=np.float64)
+            sphere_size = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+            sphere_color = np.array([0.0, 1.0, 0.0, 0.8], dtype=np.float32) # Bright Green
+            
+            mujoco.mjv_initGeom(viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                               mujoco.mjtGeom.mjGEOM_SPHERE, sphere_size, sphere_pos, identity_rot, sphere_color)
+            viewer.user_scn.ngeom += 1
 
 
 
