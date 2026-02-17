@@ -27,6 +27,10 @@ class BreadcrumbFollower:
         self.up_pressed = False
         self.down_pressed = False
         
+        # Data reception flags for diagnostics
+        self.received_dds = False
+        self.received_udp = False
+        
         # State locks
         self.lock = threading.Lock()
         
@@ -37,7 +41,7 @@ class BreadcrumbFollower:
         self.lowstate_sub = ChannelSubscriber("rt/lf/lowstate", LowState_)
         self.lowstate_sub.Init(self._low_state_callback, 10)
         
-        # Sport mode state subscribe (For position and obstacles)
+        # Fallback: Sport mode state subscribe (For default position)
         self.sport_state_sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
         self.sport_state_sub.Init(self._sport_state_callback, 10)
         
@@ -46,28 +50,75 @@ class BreadcrumbFollower:
         self.loco_client.SetTimeout(5.0)
         self.loco_client.Init()
         
-        print(f"Breadcrumb Follower Initialized on {self.iface}")
-        print("L1 + Up: Start/Stop Recording")
-        print("L2 + Down: Playback recorded trail")
+        # UDP listener for G1Localizer (G1S4 format)
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.bind(("0.0.0.0", 9870))
+        self.udp_sock.settimeout(0.5)
+        
+        # Threads
+        threading.Thread(target=self._udp_listener_loop, daemon=True).start()
+        threading.Thread(target=self._diagnostic_loop, daemon=True).start()
+
+        print(f"Breadcrumb Follower V2 Initialized on {self.iface}")
+        print("Listening for Remote on rt/lf/lowstate")
+        print("Listening for Position on UDP:9870 (G1Localizer)")
+        print("L1 + Up: Start/Stop Recording | L2 + Down: Playback")
+
+    def _diagnostic_loop(self):
+        while True:
+            time.sleep(5)
+            with self.lock:
+                status = f"[STATUS] DDS: {'OK' if self.received_dds else 'MISSING'}, UDP: {'OK' if self.received_udp else 'MISSING'}"
+                if self.is_recording:
+                    status += f" | RECORDING: {len(self.recorded_path)} pts"
+                print(status)
+
+    def _udp_listener_loop(self):
+        # magical G1S4 packet: magic(4), timestamp(8), pos_raw(12), pos_icp(12), velocity(8), ...
+        # Total header is ~308 bytes, but we only need magic + bits
+        while True:
+            try:
+                data, _ = self.udp_sock.recvfrom(2048)
+                if len(data) >= 42 and data[0:4] == b"G1S4":
+                    self.received_udp = True
+                    # position_icp is at offset 4 + 8 + 12 = 24
+                    # yaw is at offset 4 + 8 + 12 + 12 + 8 + 116 + 116 = 276 (approximately)
+                    # Actually, easier to use imu_quat at offset 276
+                    
+                    # Unpack: magic(4s), ts(d), pos_raw(3f), pos_icp(3f)
+                    pos_icp = struct.unpack('<fff', data[24:36])
+                    
+                    # imu_quat at offset 308 - 4 - 32 - 12 = 260
+                    # Let's check struct size: 4 + 8 + 12 + 12 + 8 + 116 + 116 + 16 + 12 + 4 = 308
+                    # imu_quat (4*4=16 bytes) is at 4+8+12+12+8+116+116 = 276
+                    quat = struct.unpack('<ffff', data[276:292]) # w, x, y, z
+                    
+                    with self.lock:
+                        self.current_pos = np.array([pos_icp[0], pos_icp[1]])
+                        self.current_yaw = self._get_yaw(quat)
+                        
+                        if self.is_recording:
+                            self._add_breadcrumb()
+                            
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"UDP Error: {e}")
 
     def _low_state_callback(self, msg: LowState_):
-        # Extract buttons from wireless_remote (40 bytes)
-        # data1 = msg.wireless_remote[2], data2 = msg.wireless_remote[3]
+        self.received_dds = True
         d1 = msg.wireless_remote[2]
         d2 = msg.wireless_remote[3]
         
-        # Mapping from unitree_sdk2py example
         l1 = (d1 >> 1) & 1
         l2 = (d1 >> 5) & 1
         up = (d2 >> 4) & 1
         down = (d2 >> 6) & 1
         
         with self.lock:
-            # Detect L1 + Up Toggle
             if l1 and up and not (self.l1_pressed and self.up_pressed):
                 self._toggle_recording()
             
-            # Detect L2 + Down Toggle
             if l2 and down and not (self.l2_pressed and self.down_pressed):
                 self._start_playback()
             
@@ -77,28 +128,35 @@ class BreadcrumbFollower:
             self.down_pressed = bool(down)
 
     def _get_yaw(self, quat):
-        # quat: [w, x, y, z]
         w, x, y, z = quat
         siny_cosp = 2 * (w * z + x * y)
         cosy_cosp = 1 - 2 * (y * y + z * z)
         return np.arctan2(siny_cosp, cosy_cosp)
 
     def _sport_state_callback(self, msg: SportModeState_):
+        # Fallback if UDP is not active
+        if self.received_udp:
+            return
+            
         with self.lock:
             self.current_pos = np.array([msg.position[0], msg.position[1]])
             self.current_yaw = self._get_yaw(msg.imu_state.quaternion)
             self.front_obstacle_dist = msg.range_obstacle[0]
             
             if self.is_recording:
-                if not self.recorded_path or np.linalg.norm(self.current_pos - self.recorded_path[-1]) > 0.3:
-                    self.recorded_path.append(self.current_pos.copy())
-                    print(f"[REC] Point {len(self.recorded_path)}: {self.current_pos}")
+                self._add_breadcrumb()
+
+    def _add_breadcrumb(self):
+        # Should be called with lock held
+        if not self.recorded_path or np.linalg.norm(self.current_pos - self.recorded_path[-1]) > 0.3:
+            self.recorded_path.append(self.current_pos.copy())
+            print(f"[REC] Point {len(self.recorded_path)}: {self.current_pos}")
 
     def _toggle_recording(self):
         self.is_recording = not self.is_recording
         if self.is_recording:
             self.recorded_path = []
-            self.is_playing = False # Stop playback if recording starts
+            self.is_playing = False
             print("\n>>> RECORDING STARTED")
         else:
             print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} points.")
@@ -115,16 +173,12 @@ class BreadcrumbFollower:
         
         self.is_recording = False
         self.is_playing = True
-        print("\n>>> PLAYBACK STARTED. Moving to start of trail...")
-        
-        # Start playback thread
+        print(f"\n>>> PLAYBACK STARTED. Path contains {len(self.recorded_path)} points.")
         threading.Thread(target=self._playback_loop, daemon=True).start()
 
     def _playback_loop(self):
         target_index = 0
         path = list(self.recorded_path)
-        
-        # Gains
         K_LINEAR = 0.5
         K_ANGULAR = 1.0
         MAX_VEL = 0.6
@@ -132,56 +186,46 @@ class BreadcrumbFollower:
         
         while self.is_playing and target_index < len(path):
             target = path[target_index]
-            
             with self.lock:
                 pos = self.current_pos.copy()
                 yaw = self.current_yaw
                 obs = self.front_obstacle_dist
             
-            # 1. OBSTACLE SAFETY
-            if obs < 0.8: # G1 is fast, keep a safe buffer
-                print(f"!!! STOP: Obstacle at {obs:.2f}m")
+            if obs < 0.8:
                 self.loco_client.Move(0, 0, 0)
                 time.sleep(0.5)
                 continue
 
-            # 2. NAVIGATION MATH
-            # World-frame error
             diff = target - pos
             dist = np.linalg.norm(diff)
             
-            if dist < 0.4: # Arrival radius
+            if dist < 0.4:
                 print(f">>> ARRIVED at breadcrumb {target_index}")
                 target_index += 1
                 continue
                 
-            # Desired heading
             target_yaw = np.arctan2(diff[1], diff[0])
             yaw_err = target_yaw - yaw
-            
-            # Wrap yaw error to [-pi, pi]
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
             
-            # Simple Controller
-            # We want to primarily turn towards the goal, then move
-            if abs(yaw_err) > 0.8: # Big turn needed
+            if abs(yaw_err) > 0.8:
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
-            else: # Move while turning
+            else:
                 vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
-            # G1 Move API: Move(vx, vy, vyaw)
-            # Body frame: vx forward, vy lateral (left positive)
             self.loco_client.Move(vx, 0.0, vyaw)
-            
             time.sleep(0.05)
         
-        # Stop at end
         self.loco_client.Move(0, 0, 0)
         print("\n>>> MISSION COMPLETE")
         self.is_playing = False
+
+    def run(self):
+        while True:
+            time.sleep(1)
 
     def run(self):
         while True:
