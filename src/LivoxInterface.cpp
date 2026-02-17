@@ -14,9 +14,24 @@ LivoxInterface::~LivoxInterface() {
 void LivoxInterface::initialize() {
     if (running_) return;
     
-    // Initialize Livox SDK
-    if (!LivoxLidarSdkInit("g1_mid360_config.json")) {
-        std::cerr << "[LivoxInterface] ERROR: Livox SDK Init Failed." << std::endl;
+    // Try absolute path first (Robot Desktop path), then local
+    const char* config_paths[] = {
+        "/home/unitree/development/state_e/g1_mid360_config.json",
+        "g1_mid360_config.json",
+        "./g1_mid360_config.json"
+    };
+
+    bool inited = false;
+    for (const char* path : config_paths) {
+        if (LivoxLidarSdkInit(path)) {
+            std::cout << "[LivoxInterface] SDK Initialized using: " << path << std::endl;
+            inited = true;
+            break;
+        }
+    }
+
+    if (!inited) {
+        std::cerr << "[LivoxInterface] ERROR: Livox SDK Init Failed. Config NOT found!" << std::endl;
         return;
     }
     
