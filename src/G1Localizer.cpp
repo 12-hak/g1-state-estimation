@@ -218,8 +218,45 @@ void G1Localizer::localizationLoop() {
             base_pos = state_.position;
         }
 
-        // Low-Pass Filter IMU Orientation (Alpha 0.6)
-        // This removes high-frequency jitter (wobble) from the leveling
+        // 1.5 LiDAR-LOCKED HEADING (Ultra-Stability)
+        // Use the LiDAR's internal gyro to stabilize the scan against walking twists.
+        // This is much faster and more accurate than the robot's central IMU.
+        auto lidar_imu = livox_->getLatestImu();
+        static float lidar_fused_yaw = 0;
+        static bool lidar_fused_init = false;
+        
+        float imu_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                 1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
+                                 
+        if (!lidar_fused_init) {
+            lidar_fused_yaw = imu_yaw;
+            lidar_fused_init = true;
+        } else {
+            // Integrate LiDAR's internal gyro (Yaw rate)
+            // lidar_imu axes: Z is up.
+            lidar_fused_yaw += lidar_imu.gyro[2] * 0.01f; // 10ms loop
+            
+            // Normalize
+            while(lidar_fused_yaw > M_PI) lidar_fused_yaw -= 2*M_PI;
+            while(lidar_fused_yaw < -M_PI) lidar_fused_yaw += 2*M_PI;
+            
+            // Slow sync with main orientation to prevent gyro walk
+            float diff = imu_yaw - lidar_fused_yaw;
+            if (diff > M_PI) diff -= 2*M_PI;
+            if (diff < -M_PI) diff += 2*M_PI;
+            lidar_fused_yaw += 0.1f * diff; // 10Hz sync rate
+        }
+
+        // Update q_raw with the stable LiDAR-locked heading
+        float roll = std::atan2(2.0f*(q_raw.w()*q_raw.x() + q_raw.y()*q_raw.z()), 
+                               1.0f - 2.0f*(q_raw.x()*q_raw.x() + q_raw.y()*q_raw.y()));
+        float pitch = std::asin(2.0f*(q_raw.w()*q_raw.y() - q_raw.z()*q_raw.x()));
+        
+        q_raw = Eigen::AngleAxisf(lidar_fused_yaw, Eigen::Vector3f::UnitZ()) *
+                Eigen::AngleAxisf(pitch, Eigen::Vector3f::UnitY()) *
+                Eigen::AngleAxisf(roll, Eigen::Vector3f::UnitX());
+
+        // Low-Pass Filter IMU Orientation (Alpha 0.9)
         if (first_run) {
             smoothed_q = q_raw;
             first_run = false;

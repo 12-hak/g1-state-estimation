@@ -19,10 +19,18 @@ public:
     void initialize();
     void uninitialize();
     
+    struct LidarImu {
+        float gyro[3]; // rad/s
+        float accel[3]; // g
+        uint64_t timestamp;
+    };
+
     std::vector<Eigen::Vector3f> getLatestPointCloud();
+    LidarImu getLatestImu();
     
     // SDK Callbacks (must be static)
     static void PointCloudCallback(uint32_t handle, const uint8_t dev_type, LivoxLidarEthernetPacket* data, void* client_data);
+    static void ImuDataCallback(uint32_t handle, const uint8_t dev_type, LivoxLidarEthernetPacket* data, void* client_data);
     static void WorkModeCallback(livox_status status, uint32_t handle, LivoxLidarAsyncControlResponse *response, void *client_data);
     static void LidarInfoChangeCallback(const uint32_t handle, const LivoxLidarInfo* info, void* client_data);
 
@@ -33,6 +41,9 @@ private:
     
     std::vector<Eigen::Vector3f> points_buffer_;
     std::mutex points_mutex_;
+
+    LidarImu latest_imu_;
+    std::mutex imu_mutex_;
 };
 
 } // namespace g1_localization

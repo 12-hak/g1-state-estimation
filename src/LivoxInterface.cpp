@@ -37,6 +37,7 @@ void LivoxInterface::initialize() {
     
     SetLivoxLidarInfoChangeCallback(LidarInfoChangeCallback, this);
     SetLivoxLidarPointCloudCallBack(PointCloudCallback, this);
+    SetLivoxLidarImuDataCallBack(ImuDataCallback, this);
     
     running_ = true;
     std::cout << "[LivoxInterface] SDK Initialized." << std::endl;
@@ -54,6 +55,11 @@ std::vector<Eigen::Vector3f> LivoxInterface::getLatestPointCloud() {
     auto points = points_buffer_;
     points_buffer_.clear();
     return points;
+}
+
+LivoxInterface::LidarImu LivoxInterface::getLatestImu() {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    return latest_imu_;
 }
 
 void LivoxInterface::processPoint(float x, float y, float z) {
@@ -96,6 +102,23 @@ void LivoxInterface::PointCloudCallback(uint32_t handle, const uint8_t dev_type,
             if (points[i].x == 0 && points[i].y == 0 && points[i].z == 0) continue;
             self->processPoint(points[i].x, points[i].y, points[i].z);
         }
+    }
+}
+
+void LivoxInterface::ImuDataCallback(uint32_t handle, const uint8_t dev_type,
+                                     LivoxLidarEthernetPacket* data, void* client_data) {
+    LivoxInterface* self = static_cast<LivoxInterface*>(client_data);
+    if (!self || !data) return;
+
+    if (data->data_type == kLivoxLidarImuData) {
+        LivoxLidarImuRawPoint *imu_data = (LivoxLidarImuRawPoint *)data->data;
+        std::lock_guard<std::mutex> lock(self->imu_mutex_);
+        self->latest_imu_.gyro[0] = imu_data->gyro_x;
+        self->latest_imu_.gyro[1] = imu_data->gyro_y;
+        self->latest_imu_.gyro[2] = imu_data->gyro_z;
+        self->latest_imu_.accel[0] = imu_data->acc_x;
+        self->latest_imu_.accel[1] = imu_data->acc_y;
+        self->latest_imu_.accel[2] = imu_data->acc_z;
     }
 }
 
