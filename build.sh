@@ -27,8 +27,11 @@ if [ $? -eq 0 ]; then
     echo "=================================="
     echo "Build complete!"
     echo "=================================="
-    echo "Run with: ./build/g1_localization_node [network_interface] [receiver_ip]"
-    echo "Example: ./build/g1_localization_node eth0 192.168.1.169"
+    echo "TEMP PATH FIX (Run this first if you get symbol errors):"
+    echo "export LD_LIBRARY_PATH=/opt/unitree_robotics/lib:/home/unitree/development/unitree_sdk2/lib:\$LD_LIBRARY_PATH"
+    echo ""
+    echo "Then run with:"
+    echo "./build/g1_localization_node eth0 127.0.0.1"
 else
     echo ""
     echo "Build failed! Check errors above."
