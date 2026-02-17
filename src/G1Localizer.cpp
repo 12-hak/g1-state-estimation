@@ -471,8 +471,10 @@ void G1Localizer::localizationLoop() {
                 // Skip ICP when stationary - broadcast already happened above
             } else {
                 std::vector<Eigen::Vector2f> sub_scan;
-                if (base_frame_scan.size() > 300) {
-                    for(size_t i=0; i<base_frame_scan.size(); i+=2) sub_scan.push_back(base_frame_scan[i]);
+                const size_t target_pts = 500;
+                if (base_frame_scan.size() > target_pts) {
+                    size_t stride = base_frame_scan.size() / target_pts;
+                    for(size_t i=0; i<base_frame_scan.size(); i+=stride) sub_scan.push_back(base_frame_scan[i]);
                 } else sub_scan = base_frame_scan;
 
                 // CLONE METHOD: Use Predicted State as Guess

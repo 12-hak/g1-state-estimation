@@ -4,7 +4,7 @@
 
 namespace g1_localization {
 
-ScanMatcher::ScanMatcher() : max_iterations_(15), tolerance_(1e-4), outlier_dist_sq_(0.25f) {}
+ScanMatcher::ScanMatcher() : max_iterations_(30), tolerance_(1e-4), outlier_dist_sq_(0.25f) {}
 
 std::vector<LidarPoint> ScanMatcher::computeStructure(const std::vector<Eigen::Vector2f>& points) {
     std::vector<LidarPoint> structured;
@@ -105,7 +105,7 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
         // CLONE MISSING PIECE: The Prior (Kalman Filter behavior)
         // DIAGNOSTIC: Re-enabled.
         float pos_stiffness = 50.0f; 
-        float rot_stiffness = 200.0f; // Reset to default
+        float rot_stiffness = 40.0f; // Lowered to allow more Lidar pull
         
         Eigen::Matrix3f Prior_H = Eigen::Matrix3f::Identity();
         Prior_H(0,0) = pos_stiffness;
