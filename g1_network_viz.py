@@ -453,30 +453,24 @@ class G1NetworkVisualizer:
                     self.last_state_time = current_time
                     self.state_received = True
 
-                    # --- INTEGRATE SCAN INTO PERSISTENT MAP ---
-                    if point_cloud.size > 1: # Need at least 2 points for neighbor filter
-                        # 1. NEIGHBOR FILTER: Only keep points that have another point close by
-                        # This filters isolated noise/dust
+                    # --- STICKY NEIGHBOR MAPPING ---
+                    if point_cloud.size > 1:
+                        # 1. Connectivity Check: Only points with a neighbor within 15cm are considered "Solid"
                         neighbor_threshold_sq = 0.15**2 
                         is_solid = np.zeros(len(point_cloud), dtype=bool)
                         
-                        # Geometric connectivity check (Simple O(N^2) but N is small (100-300))
                         for i in range(len(point_cloud)):
                             p1 = point_cloud[i]
-                            # Check nearby points (usually points are roughly ordered by scan)
-                            # We check 5 points before and after for speed
-                            start_j = max(0, i - 5)
-                            end_j = min(len(point_cloud), i + 6)
-                            for j in range(start_j, end_j):
+                            # Check neighbors in a small window
+                            for j in range(max(0, i-5), min(len(point_cloud), i+6)):
                                 if i == j: continue
-                                d_sq = np.sum((p1 - point_cloud[j])**2)
-                                if d_sq < neighbor_threshold_sq:
+                                if np.sum((p1 - point_cloud[j])**2) < neighbor_threshold_sq:
                                     is_solid[i] = True
                                     break
                         
                         solid_points = point_cloud[is_solid]
                         
-                        # 2. Transform solid points to world frame
+                        # 2. Transform to World Frame
                         w, x, y, z = imu_quat
                         R = np.array([
                             [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
@@ -486,12 +480,11 @@ class G1NetworkVisualizer:
                         world_pts = (solid_points @ R.T) + self.position
                         robot_xy = self.position[:2]
                         
-                        # 3. HYSTERESIS CLEARING & UPDATING
-                        # Get angular wedge of current scan
-                        angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
-                        angle_min, angle_max = np.min(angles), np.max(angles)
+                        # 3. Update persistence
+                        # Get angles of active points for wedge decay
+                        scan_angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
+                        angle_min, angle_max = np.min(scan_angles), np.max(scan_angles)
                         
-                        # Track which cells were hit by this specific scan
                         hit_keys = set()
                         valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0)
                         
@@ -500,16 +493,18 @@ class G1NetworkVisualizer:
                             hit_keys.add(key)
                             
                             if key in self.wall_segments:
-                                mean_pt, last_time, hits, misses = self.wall_segments[key]
-                                self.wall_segments[key] = ((mean_pt * hits + pt)/(hits+1), current_time, min(hits+1, 30), 0)
+                                mean_pt, last_time, persistence, _unused = self.wall_segments[key]
+                                # Increase persistence on hit, max 10
+                                self.wall_segments[key] = (pt, current_time, min(persistence + 1, 10), 0)
                             else:
-                                self.wall_segments[key] = (pt, current_time, 1, 0)
+                                # New discovery starts with persistence 3
+                                self.wall_segments[key] = (pt, current_time, 3, 0)
 
-                        # 4. Increment misses for points in wedge that WERE NOT hit
-                        keys_to_check = [k for k, v in self.wall_segments.items() 
+                        # 4. Decay persistence for points in wedge NOT hit
+                        keys_in_range = [k for k, v in self.wall_segments.items() 
                                        if np.linalg.norm(v[0][:2] - robot_xy) < 4.0]
                         
-                        for k in keys_to_check:
+                        for k in keys_in_range:
                             if k in hit_keys: continue
                             
                             pt_world = self.wall_segments[k][0]
@@ -519,18 +514,18 @@ class G1NetworkVisualizer:
                             pt_angle = np.arctan2(pt_robot_xy[1], pt_robot_xy[0])
                             
                             if angle_min <= pt_angle <= angle_max:
-                                mean_pt, last_time, hits, misses = self.wall_segments[k]
-                                # If it's in range but missed, it might be a ghost or moved
-                                if misses > 10:
+                                mean_pt, last_time, persistence, _ = self.wall_segments[k]
+                                if persistence <= 1:
                                     del self.wall_segments[k]
                                 else:
-                                    self.wall_segments[k] = (mean_pt, last_time, hits, misses + 1)
+                                    # Slowly decay persistence
+                                    self.wall_segments[k] = (mean_pt, last_time, persistence - 1, 0)
                         
-                        # 5. Periodic maintenance (Cleanup & Rebuild cloud)
+                        # 5. Maintenance
                         if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
                         if current_time - self._last_map_maintenance > 0.1:
-                            # Rebuild map cloud for the visualizer
-                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 5]
+                            # Only render points with persistence >= 3
+                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 3]
                             if self.map_cloud_data:
                                 self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
                             else:
