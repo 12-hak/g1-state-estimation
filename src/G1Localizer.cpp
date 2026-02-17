@@ -590,3 +590,6 @@ std::vector<Eigen::Vector2f> G1Localizer::getLatestScan() const {
 
 } // namespace g1_localization
 
+} // namespace g1_localization
+
+
