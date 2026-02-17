@@ -212,7 +212,7 @@ class BreadcrumbFollower:
         self.received_udp = False
         
         # State locks
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         
         # SDK components
         ChannelFactoryInitialize(0, self.iface)
