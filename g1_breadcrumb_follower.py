@@ -433,16 +433,17 @@ class BreadcrumbFollower:
                 target = path[0]
                 dist_to_start = np.linalg.norm(target[:2] - pos)
                 
-                # If we are close to the start, start aligning to the recorded entry heading
-                if dist_to_start < 0.75:
+                # Only align to the final start-pose when very close
+                # This prevents the robot from freezing and spinning 0.5m away
+                if dist_to_start < 0.30:
                     target_yaw = target[2]
                 else:
                     diff = target[:2] - pos
                     target_yaw = np.arctan2(diff[1], diff[0])
                 
-                # Tight threshold to "Lock In" to the start point
-                if dist_to_start < 0.20:
-                    print(">>> ON TRAIL. Switching to precision following.")
+                # Transition to following when we are on the spot
+                if dist_to_start < 0.25:
+                    print(">>> ON TRAIL. Switching to path following.")
                     has_started_trail = True
                 lookahead_idx = 0
             else:
@@ -476,20 +477,22 @@ class BreadcrumbFollower:
             while yaw_err < -np.pi: yaw_err += 2*np.pi
             
             # 6. Termination check
-
-            # 4. Termination
             if is_final_approach and dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
                 print(f">>> TARGET SECURED.")
                 break
 
-            # 5. Precision Velocity Control
-            # If heading error exceeds 20 degrees, stop and rotate to stay on path
-            if abs(yaw_err) > 0.35: 
-                vx = 0.0
-                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+            # 7. Precision Velocity Control
+            # Deadband and scaled turn
+            if abs(yaw_err) < 0.02:
+                vyaw = 0.0
             else:
-                # Speed scales with the SQUARE of alignment. 
-                # This causes a rapid but smooth slowdown as the robot enters a turn.
+                vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+
+            # If heading error exceeds 25 degrees, stop and rotate
+            if abs(yaw_err) > 0.45: 
+                vx = 0.0
+            else:
+                # Speed scales with the SQUARE of alignment for smooth turns.
                 alignment_factor = np.cos(yaw_err) ** 2
                 
                 if is_final_approach:
@@ -497,8 +500,6 @@ class BreadcrumbFollower:
                 else:
                     # Cruising: slow down for turns, maintain 0.2m/s minimum
                     vx = np.clip(MAX_VEL * alignment_factor, 0.2, MAX_VEL)
-                
-                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
 
             self.loco_client.Move(vx, 0.0, vyaw)
             
