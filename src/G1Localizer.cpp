@@ -519,8 +519,8 @@ void G1Localizer::localizationLoop() {
                     if (yaw_diff > M_PI) yaw_diff -= 2*M_PI;
                     if (yaw_diff < -M_PI) yaw_diff += 2*M_PI;
 
-                    // Smoothly update corrections (Snappy alpha for fast relocalization)
-                    float alpha = 0.8f;
+                    // Smoothly update corrections (Ultra-Snappy alpha for precise snapping)
+                    float alpha = 0.9f;
                     slam_correction_ = slam_correction_ * (1.0f - alpha) + target_correction * alpha;
                     slam_yaw_correction_ = slam_yaw_correction_ * (1.0f - alpha) + yaw_diff * alpha;
                     

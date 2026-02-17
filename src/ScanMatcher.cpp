@@ -4,7 +4,7 @@
 
 namespace g1_localization {
 
-ScanMatcher::ScanMatcher() : max_iterations_(30), tolerance_(1e-4), outlier_dist_sq_(4.0f) {}
+ScanMatcher::ScanMatcher() : max_iterations_(30), tolerance_(1e-4), outlier_dist_sq_(1.0f) {}
 
 std::vector<LidarPoint> ScanMatcher::computeStructure(const std::vector<Eigen::Vector2f>& points) {
     std::vector<LidarPoint> structured;
@@ -20,7 +20,7 @@ std::vector<LidarPoint> ScanMatcher::computeStructure(const std::vector<Eigen::V
         Eigen::Matrix2f cov = Eigen::Matrix2f::Zero();
         
         for (const auto& p : points) {
-            if ((p - points[i]).squaredNorm() < 0.15f) { // 15cm radius
+            if ((p - points[i]).squaredNorm() < 0.01f) { // 10cm radius
                 centroid += p;
                 count++;
             }
@@ -29,7 +29,7 @@ std::vector<LidarPoint> ScanMatcher::computeStructure(const std::vector<Eigen::V
         if (count > 3) {
             centroid /= count;
             for (const auto& p : points) {
-                if ((p - points[i]).squaredNorm() < 0.15f) {
+                if ((p - points[i]).squaredNorm() < 0.01f) {
                     Eigen::Vector2f d = p - centroid;
                     cov += d * d.transpose();
                 }
@@ -104,8 +104,8 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
 
         // CLONE MISSING PIECE: The Prior (Kalman Filter behavior)
         // DIAGNOSTIC: Re-enabled.
-        float pos_stiffness = 10.0f; 
-        float rot_stiffness = 10.0f; // Very low penalty to allow large 'snaps' to walls
+        float pos_stiffness = 1.0f; 
+        float rot_stiffness = 1.0f; // Minimal penalty to trust Lidar geometry for distance/yaw
         
         Eigen::Matrix3f Prior_H = Eigen::Matrix3f::Identity();
         Prior_H(0,0) = pos_stiffness;
