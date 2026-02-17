@@ -158,34 +158,43 @@ void G1Localizer::localizationLoop() {
     std::cout << "[G1Localizer] MAP CAP 1000 ENABLED" << std::endl;
 
     auto next_tick = std::chrono::steady_clock::now();
-    const std::chrono::milliseconds tick_duration(20); // 50Hz
+    // Higher frequency loop for smoother IMU updates
+    const std::chrono::milliseconds tick_duration(10); // 100Hz
+
+    // Smooth orientation state
+    Eigen::Quaternionf smoothed_q = Eigen::Quaternionf::Identity();
+    bool first_run = true;
 
     while (running_) {
         auto now = std::chrono::steady_clock::now();
         next_tick += tick_duration;
         
         // 1. Get State Snapshot (Thread Safe)
-        Eigen::Quaternionf q;
+        Eigen::Quaternionf q_raw;
         Eigen::Vector3f base_pos;
-        Eigen::Vector3f gyro;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            q = state_.orientation;
+            q_raw = state_.orientation;
             base_pos = state_.position;
-            gyro = state_.angular_velocity;
+        }
+
+        // Low-Pass Filter IMU Orientation (Alpha 0.6)
+        // This removes high-frequency jitter (wobble) from the leveling
+        if (first_run) {
+            smoothed_q = q_raw;
+            first_run = false;
+        } else {
+            smoothed_q = smoothed_q.slerp(0.6f, q_raw);
         }
 
         // Pre-calculate rotation matrices at this state
-        Eigen::Matrix3f R_body = q.toRotationMatrix();
+        Eigen::Matrix3f R_body = smoothed_q.toRotationMatrix();
         float base_yaw = std::atan2(R_body(1,0), R_body(0,0));
         
         // Correct Leveling Transform:
         // We want vectors in a frame that is Yaw-Aligned but Gravity-Leveled
-        // P_level = R_yaw^T * P_world
-        // P_world = R_body * P_body
-        // -> P_level = R_yaw^T * R_body * P_body
-        
         Eigen::Matrix3f R_yaw = Eigen::AngleAxisf(base_yaw, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+        // R_level transforms BODY -> LEVELED frame
         Eigen::Matrix3f R_level_transform = R_yaw.transpose() * R_body;
 
         auto points_3d = livox_->getLatestPointCloud();
@@ -311,8 +320,34 @@ void G1Localizer::localizationLoop() {
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             corrected_pos_broadcast = state_.position;
-            float raw_yaw = std::atan2(2.0f*(q.w()*q.z() + q.x()*q.y()), 
-                                     1.0f - 2.0f*(q.y()*q.y() + q.z()*q.z()));
+            float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                     1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
+            corrected_yaw_broadcast = raw_yaw + slam_yaw_correction_;
+        }
+
+        // 5. LIVE BROADCASTS (Moved BEFORE ICP so it always runs, even when stationary)
+        // ... (lines 328-450 skipped) ...
+                    
+                    // 2. Yaw Correction (New!)
+                    float icp_yaw = std::atan2(result.rotation(1,0), result.rotation(0,0));
+                    float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                             1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
+
+        // ... (lines 485-492 skipped) ...
+
+        // 4. MAP UPDATE STEP (Performed AFTER ICP Correction)
+        // Get latest corrected position and yaw
+        Eigen::Vector3f corrected_pos;
+        float corrected_yaw;
+        bool icp_ok = false;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            corrected_pos = state_.position;
+            icp_ok = state_.icp_valid;
+            float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                     1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
+            corrected_yaw = raw_yaw + slam_yaw_correction_;
+        }
             corrected_yaw_broadcast = raw_yaw + slam_yaw_correction_;
         }
 
@@ -432,9 +467,13 @@ void G1Localizer::localizationLoop() {
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
                     predicted_pos = Eigen::Vector2f(state_.position.x(), state_.position.y());
-                    // Use IMU yaw + Odo Integration as guess
-                    predicted_yaw = std::atan2(2.0f*(q.w()*q.z() + q.x()*q.y()), 
-                                             1.0f - 2.0f*(q.y()*q.y() + q.z()*q.z()));
+                    // Use Corrected Yaw as guess (Map frame)
+                    float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                             1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
+                                             
+                    // Critical Fix: Start ICP search from the LAST CORRECTED yaw, not raw yaw
+                    // This prevents "resetting" the rotation every frame and fighting the correction
+                    predicted_yaw = raw_yaw + slam_yaw_correction_;
                 }
 
                 auto result = matcher_->align(sub_scan, global_map_, predicted_pos, predicted_yaw);
