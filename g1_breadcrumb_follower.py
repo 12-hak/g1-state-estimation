@@ -199,15 +199,15 @@ class BreadcrumbFollower:
         target_index = 0
         path = list(self.recorded_path)
         
-        # Controller Gains (Higher angular gain for precision)
+        # Controller Gains
         K_LINEAR = 0.6
         K_ANGULAR = 1.5
         MAX_VEL = 0.5
         MAX_YAW = 1.0
         
-        # Thresholds (Optimized: tolerance for position, accuracy for yaw)
-        DIST_THRESHOLD = 0.25 
-        YAW_THRESHOLD = 0.10   
+        # Thresholds (Optimized: tolerance for speed, precision for rotation)
+        DIST_THRESHOLD = 0.35 
+        YAW_THRESHOLD = 0.12   
         
         last_debug = 0
         print(">>> Starting Playback Thread...")
@@ -228,7 +228,16 @@ class BreadcrumbFollower:
             diff = target[:2] - pos
             dist = np.linalg.norm(diff)
             
-            # If we are close enough in distance, focus on recorded yaw
+            # Determine if this point requires strict orientation alignment
+            # (It's the last point, or the next point's position is identical)
+            is_last = (target_index == len(path) - 1)
+            is_rotation_point = False
+            if not is_last:
+                next_pt = path[target_index + 1]
+                if np.linalg.norm(next_pt[:2] - target[:2]) < 0.1:
+                    is_rotation_point = True
+
+            # Use recorded yaw for rotation points/end, otherwise aim at point
             if dist < DIST_THRESHOLD:
                 target_yaw = target[2]
             else:
@@ -240,25 +249,31 @@ class BreadcrumbFollower:
             
             # Rate-limited debug
             if time.time() - last_debug > 2.0:
-                print(f"[DEBUG] Target {target_index}: dist={dist:.2f}m, yaw_err={yaw_err:.2f}rad")
+                pt_type = "ROT" if is_rotation_point or is_last else "WALK"
+                print(f"[DEBUG] Target {target_index} ({pt_type}): dist={dist:.2f}m, yaw_err={yaw_err:.2f}rad")
                 last_debug = time.time()
 
-            # 2. Check Arrival
-            if dist < DIST_THRESHOLD and abs(yaw_err) < YAW_THRESHOLD:
-                print(f">>> REACHED breadcrumb {target_index}")
-                target_index += 1
-                continue
+            # 2. Check Arrival Logic
+            # If it's just a walking waypoint, passing the DIST threshold is enough
+            if dist < DIST_THRESHOLD:
+                if not (is_last or is_rotation_point):
+                    print(f">>> PASSED breadcrumb {target_index}")
+                    target_index += 1
+                    continue
+                elif abs(yaw_err) < YAW_THRESHOLD:
+                    print(f">>> ALIGNED with breadcrumb {target_index}")
+                    target_index += 1
+                    continue
                 
             # 3. Control Logic
             if abs(yaw_err) > 0.5: # Prioritize alignment
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             else:
-                # Move towards target
                 if dist > DIST_THRESHOLD:
                     vx = np.clip(K_LINEAR * dist, 0.1, MAX_VEL)
                 else:
-                    vx = 0.0 # Just fine-tune rotation
+                    vx = 0.0 # Orientation fine-tuning for rotation points
                     
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
