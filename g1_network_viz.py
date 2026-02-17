@@ -222,16 +222,21 @@ class G1NetworkVisualizer:
         
         # Persistent wall tracking
         self.wall_segments = {}  # Dict of wall segments: {grid_key: (point, last_seen_time, confidence)}
-        self.wall_timeout = 30.0  # Walls persist for 30 seconds without confirmation
+        self.wall_timeout = 600.0  # Walls persist for 10 minutes (keep points you don't see)
         
         # Rendering settings
         self.wall_height = 1.5  # Wall marker height in meters
         self.post_radius = 0.03  # Post radius
-        self.max_render_points = 1500  # Reduced for better performance
+        self.max_render_points = 2500  # Increased since we're rendering two layers
         self.show_walls = True
         self.show_breadcrumbs = False
         self._debug_first_map = True  # Print debug on first map data
         self._debug_first_render = True  # Print debug on first render
+
+        # Find base body for active scan transformation
+        self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        if self.base_body_id < 0:
+            self.base_body_id = 1 # Fallback to first child of world
 
         # UDP receiver
         if not demo_mode:
@@ -443,24 +448,109 @@ class G1NetworkVisualizer:
                     points = struct.unpack(f"<{point_count * 3}f", points_data)
                     point_cloud = np.array(points).reshape(-1, 3)
 
+                current_time = time.time()
                 with self.state_lock:
+                    # Update robot state
+                    self.position = np.array(position_icp)
                     self.position_raw = np.array(position_raw)
-                    self.position = np.array(position_icp)  # Use ICP as primary
                     self.velocity = np.array(velocity)
                     self.joint_positions = np.array(joint_pos)
                     self.joint_velocities = np.array(joint_vel)
                     self.imu_quaternion = np.array(imu_quat)
                     self.imu_gyro = np.array(imu_gyro)
                     self.point_cloud = point_cloud
-                    self.last_state_time = time.time()
+                    self.last_state_time = current_time
+                    self.state_received = True
 
-                    if not self.state_received:
-                        print(f"Receiving robot state (v4 with dual positioning and {point_count} LiDAR points)!")
-                        self.state_received = True
-                    
-                    # G1S4 point_cloud is NOT used for visualization - we only use G1M1 snapshots
-                    # This prevents flashing between small chunks and full scans.
-                    # The G1M1 packets now always contain full 360 scans (accumulated over 0.8s)
+                    # --- INTEGRATE SCAN INTO PERSISTENT MAP ---
+                    if point_cloud.size > 0:
+                        # 1. Transform points from Robot Frame to World Frame
+                        # IMU quat to rotation matrix (w, x, y, z)
+                        w, x, y, z = imu_quat
+                        xx, yy, zz = x*x, y*y, z*z
+                        xy, xz, yz = x*y, x*z, y*z
+                        wx, wy, wz = w*x, w*y, w*z
+                        
+                        R = np.array([
+                            [1 - 2*(yy + zz), 2*(xy - wz),     2*(xz + wy)],
+                            [2*(xy + wz),     1 - 2*(xx + zz), 2*(yz - wx)],
+                            [2*(xz - wy),     2*(yz + wx),     1 - 2*(xx + yy)]
+                        ])
+                        
+                        # Apply rotation and shift by ICP world position
+                        world_pts = (point_cloud @ R.T) + self.position
+                        
+                        # 2. ANGULAR CLEAR: Only clear history in the wedge we are currently scanning
+                        # This avoids the "flashing" caused by clearing the whole circle every packet.
+                        robot_xy = self.position[:2]
+                        # Get angles of active points in robot frame
+                        angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
+                        angle_min = np.min(angles) - 0.05 # Add small buffer
+                        angle_max = np.max(angles) + 0.05
+                        
+                        # Create a copy of keys to check against the active wedge
+                        lidar_range_sq = 4.5**2 # Clear slightly beyond mapping range
+                        keys_to_clear = []
+                        for k, v in self.wall_segments.items():
+                            pt_world = v[0]
+                            # pt in robot frame for angle check
+                            pt_rel = pt_world[:2] - robot_xy
+                            dist_sq = np.sum(pt_rel**2)
+                            
+                            if dist_sq < lidar_range_sq:
+                                # Rotate rel point back to robot frame for angle check
+                                # R_inv = R.T (since it's a rotation matrix)
+                                pt_robot_xy = np.array([
+                                    pt_rel[0] * R[0,0] + pt_rel[1] * R[1,0],
+                                    pt_rel[0] * R[0,1] + pt_rel[1] * R[1,1]
+                                ])
+                                pt_angle = np.arctan2(pt_robot_xy[1], pt_robot_xy[0])
+                                
+                                # If this historical point is in the wedge we just scanned, clear it
+                                # (Handle wrap-around logic for angles if needed, but simple wedge works for slips)
+                                if angle_min <= pt_angle <= angle_max:
+                                    keys_to_clear.append(k)
+                        
+                        for k in keys_to_clear:
+                            del self.wall_segments[k]
+                            
+                        # 3. Filter for mapping (ignore ground, high points, and robot's own body)
+                        dist_sq_to_robot = np.sum((world_pts[:, :2] - robot_xy)**2, axis=1)
+                        valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0) & (dist_sq_to_robot > 0.35**2)
+                        mapping_pts = world_pts[valid_mask]
+                        
+                        # 4. STABLE VOXEL MAPPING
+                        for pt in mapping_pts:
+                            key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
+                            if key in self.wall_segments:
+                                mean_pt, last_time, count = self.wall_segments[key]
+                                new_count = min(count + 1, 30)
+                                new_mean = (mean_pt * count + pt) / (count + 1)
+                                self.wall_segments[key] = (new_mean, current_time, new_count)
+                            else:
+                                self.wall_segments[key] = (pt, current_time, 1)
+                        
+                        # 5. Periodic maintenance (Cleanup & Rebuild cloud)
+                        if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
+                        
+                        if current_time - self._last_map_maintenance > 0.08: # Slightly faster rebuild
+                            # Remove expired points (timeout = 600s)
+                            expired_keys = [k for k, v in self.wall_segments.items() 
+                                           if current_time - v[1] > self.wall_timeout]
+                            for k in expired_keys: del self.wall_segments[k]
+                            
+                            # Rebuild map cloud for the visualizer
+                            # SHARPENING: Require 5 hits for a solid wall
+                            if self.wall_segments:
+                                self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 5]
+                                if self.map_cloud_data:
+                                    self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
+                                else:
+                                    self.map_cloud = np.empty((0, 3))
+                            else:
+                                self.map_cloud = np.empty((0, 3))
+                                
+                            self._last_map_maintenance = current_time
 
             elif magic == b"G1S3" and len(data) >= PACKET_SIZE_V3:
                 # V3 format with position and velocity
@@ -674,13 +764,6 @@ class G1NetworkVisualizer:
         """Render walls/obstacles as thin vertical posts and position markers."""
         # Reset geom counter for custom rendering
         viewer.user_scn.ngeom = 0
-        
-        # Ensure we have enough geom slots for rendering
-        if viewer.user_scn.maxgeom < 10000:
-            if self._debug_first_render:
-                print(f"[DEBUG] user_scn.maxgeom was {viewer.user_scn.maxgeom}, resizing to 10000")
-            viewer.user_scn.maxgeom = 10000
-            viewer.user_scn.geoms = mujoco.MjvGeom(10000)
         max_geom = viewer.user_scn.maxgeom
             
         # Converged (ICP) position
@@ -690,73 +773,53 @@ class G1NetworkVisualizer:
         identity_rot = np.eye(3, dtype=np.float64).flatten()
         
         with self.state_lock:
-            # Only render if we have V4 data (point_cloud exists)
-            if not hasattr(self, 'point_cloud'):
+            # Check if we have any data
+            has_point_cloud = hasattr(self, 'point_cloud') and self.point_cloud.size > 0
+            has_map_cloud = hasattr(self, 'map_cloud') and self.map_cloud.size > 0
+            
+            if not (has_point_cloud or has_map_cloud):
                 return
             
-            # Pick which cloud to render: prefer map_cloud (G1M1), fallback to point_cloud (G1S4)
-            render_cloud = None
-            if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
-                render_cloud = self.map_cloud
-            elif self.point_cloud.size > 0:
-                render_cloud = self.point_cloud
-            
-            # --- RENDER POINTS AS THIN VERTICAL POSTS ---
-            if self.show_walls and render_cloud is not None and render_cloud.size > 0:
-                # Filter out NaNs/Infs
-                valid_mask = np.all(np.isfinite(render_cloud), axis=1)
-                render_cloud = render_cloud[valid_mask]
-                
-                if self._debug_first_render:
-                    print(f"[DEBUG] First render: {len(render_cloud)} points in cloud")
-                    print(f"[DEBUG]   Robot pos: {viz_pos_converged}")
-                    print(f"[DEBUG]   maxgeom: {max_geom}, ngeom before: {viewer.user_scn.ngeom}")
-                
-                robot_pos = np.array([viz_pos_converged[0], viz_pos_converged[1]])
-                height = self.wall_height
-                half_height = height / 2.0
-                radius = self.post_radius
+            # Rendering parameters
+            height = self.wall_height
+            half_height = height / 2.0
+            radius = self.post_radius
+            robot_pos_2d = np.array([viz_pos_converged[0], viz_pos_converged[1]])
+
+            # --- 1. RENDER PERSISTENT MAP (The "History") ---
+            if self.show_walls and has_map_cloud:
+                map_cloud = self.map_cloud
+                map_data = getattr(self, 'map_cloud_data', [])
                 
                 # Distance calculation for downsampling
-                all_points = render_cloud
-                dists = np.linalg.norm(all_points[:, :2] - robot_pos, axis=1)
+                dists = np.linalg.norm(map_cloud[:, :2] - robot_pos_2d, axis=1)
                 
                 # Adaptive downsampling
-                close_mask = dists < 2.0
-                mid_mask = (dists >= 2.0) & (dists < 4.0)
-                far_mask = dists >= 4.0
-                
-                close_idx = np.where(close_mask)[0]
-                mid_idx = np.where(mid_mask)[0][::3] # More aggressive downsampling
-                far_idx = np.where(far_mask)[0][::8]
-                
+                close_idx = np.where(dists < 2.5)[0][::2]
+                mid_idx = np.where((dists >= 2.5) & (dists < 5.0))[0][::5]
+                far_idx = np.where(dists >= 5.0)[0][::15]
                 render_idx = np.concatenate([close_idx, mid_idx, far_idx])
-                if len(render_idx) > self.max_render_points:
-                    step = len(render_idx) // self.max_render_points
-                    render_idx = render_idx[::step]
                 
-                # BOX is faster to render than CYLINDER in large quantities
                 post_size = np.array([radius, radius, half_height], dtype=np.float64)
                 
                 for idx in render_idx:
                     if viewer.user_scn.ngeom >= max_geom:
                         break
                     
-                    point = all_points[idx]
+                    point = map_cloud[idx]
                     dist = dists[idx]
+                    hit_count = map_data[idx][2] if idx < len(map_data) else 10
                     
-                    # Color gradient
-                    if dist < 1.0:
-                        color = np.array([1.0, 1.0, 1.0, 0.9], dtype=np.float32)
-                    elif dist < 3.0:
-                        t = (dist - 1.0) / 2.0
-                        color = np.array([1.0, 1.0 - 0.5*t, 1.0 - t, 0.8], dtype=np.float32)
+                    # ALPHA based on hit count: More hits = more solid
+                    # 1 hit = 0.1 alpha (hidden), 3 hits = 0.3, 10+ hits = 0.6
+                    alpha_base = min(hit_count / 15.0, 0.6)
+                    
+                    if dist < 2.0:
+                        color = np.array([1.0, 0.4, 0.0, alpha_base], dtype=np.float32) 
                     else:
-                        color = np.array([1.0, 0.5, 0.0, 0.7], dtype=np.float32)
+                        color = np.array([0.4, 0.0, 0.6, alpha_base * 0.8], dtype=np.float32)
                     
-                    # Vertical box
                     post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
-                    
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
                         mujoco.mjtGeom.mjGEOM_BOX,
@@ -766,9 +829,41 @@ class G1NetworkVisualizer:
                         color
                     )
                     viewer.user_scn.ngeom += 1
+
+            # --- 2. RENDER ACTIVE SCAN (The "High Refresh" Scanner) ---
+            if self.show_walls and has_point_cloud:
+                # Transform point_cloud from robot frame to world frame
+                # Using MuJoCo's computed xmat/xpos for the base body
+                base_xmat = self.data.xmat[self.base_body_id].reshape(3, 3)
+                base_xpos = self.data.xpos[self.base_body_id]
                 
+                # Transform all points: P_world = R_base * P_robot + T_base
+                transformed_points = (self.point_cloud @ base_xmat.T) + base_xpos
+                
+                # Render active scan with bright colors
+                # No downsampling for the active scan slice (usually 100-300 points)
+                active_post_size = np.array([radius * 1.2, radius * 1.2, half_height], dtype=np.float64)
+                
+                for point in transformed_points:
+                    if viewer.user_scn.ngeom >= max_geom:
+                        break
+                    
+                    # Bright "Electric" colors for active scan
+                    color = np.array([0.0, 1.0, 1.0, 0.9], dtype=np.float32) # Bright Cyan
+                    
+                    post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
+                    mujoco.mjv_initGeom(
+                        viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                        mujoco.mjtGeom.mjGEOM_BOX,
+                        active_post_size,
+                        post_pos,
+                        identity_rot,
+                        color
+                    )
+                    viewer.user_scn.ngeom += 1
+
                 if self._debug_first_render:
-                    print(f"[DEBUG]   ngeom after posts: {viewer.user_scn.ngeom}")
+                    print(f"[DEBUG] Map: {len(self.map_cloud)} pts, Active: {len(transformed_points)} pts")
                     self._debug_first_render = False
             
             # --- RENDER ROBOT PATH (Connected line and/or Breadcrumbs) ---
