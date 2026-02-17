@@ -198,20 +198,27 @@ class BreadcrumbFollower:
     def _playback_loop(self):
         # 1. Path Setup
         path = np.array(self.recorded_path)
-        if len(path) < 2:
+        if len(path) < 3: # Need at least a few points to have a path
+            print(">>> ERROR: Path too short to playback.")
             self.is_playing = False
             return
 
         # Controller Parameters
-        LOOKAHEAD_DIST = 0.6   # Meters to look ahead on path for steering
-        MAX_VEL = 0.5          # Max linear speed
-        MAX_YAW_VEL = 1.0      # Max angular speed
-        FINAL_DIST_TOL = 0.25  # Final position tolerance
-        FINAL_YAW_TOL = 0.12   # Final yaw tolerance
+        LOOKAHEAD_DIST = 0.6   
+        MAX_VEL = 0.5          
+        MAX_YAW_VEL = 1.0      
+        FINAL_DIST_TOL = 0.25  
+        FINAL_YAW_TOL = 0.15   
         
-        last_index = 0
+        # Skip the very first point because we are already standing on it
+        last_index = 1 
         last_debug = 0
+        
+        with self.lock:
+            start_pos = self.current_pos.copy()
+        
         print(f">>> STARTING WAYPOINT NAV: {len(path)} points")
+        print(f">>> Target Destination: {path[-1, :2]}")
 
         while self.is_playing:
             with self.lock:
@@ -230,11 +237,14 @@ class BreadcrumbFollower:
             remaining_path = path[last_index:]
             dists = np.linalg.norm(remaining_path[:, :2] - pos, axis=1)
             closest_idx = np.argmin(dists) + last_index
-            last_index = closest_idx
+            
+            # Ensure index only moves forward
+            if closest_idx > last_index:
+                last_index = closest_idx
             
             # Search forward for look-ahead point
-            lookahead_idx = closest_idx
-            for i in range(closest_idx, len(path)):
+            lookahead_idx = last_index
+            for i in range(last_index, len(path)):
                 d = np.linalg.norm(path[i, :2] - pos)
                 lookahead_idx = i
                 if d > LOOKAHEAD_DIST:
@@ -242,7 +252,9 @@ class BreadcrumbFollower:
             
             target = path[lookahead_idx]
             dist_to_final = np.linalg.norm(path[-1, :2] - pos)
-            is_final_approach = (lookahead_idx == len(path) - 1) and (dist_to_final < 0.8)
+            
+            # We are in final approach if we are looking at the last point AND have progressed
+            is_final_approach = (lookahead_idx == len(path) - 1) and (last_index > len(path) // 2 or dist_to_final < 1.0)
 
             # 3. Calculate Steering
             # Aim at look-ahead point's position
