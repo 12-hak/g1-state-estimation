@@ -198,7 +198,8 @@ class BreadcrumbFollower:
     def _playback_loop(self):
         # 1. Path Setup
         path = np.array(self.recorded_path)
-        if len(path) < 3: # Need at least a few points to have a path
+        path_len = len(path)
+        if path_len < 5:
             print(">>> ERROR: Path too short to playback.")
             self.is_playing = False
             return
@@ -208,17 +209,13 @@ class BreadcrumbFollower:
         MAX_VEL = 0.5          
         MAX_YAW_VEL = 1.0      
         FINAL_DIST_TOL = 0.25  
-        FINAL_YAW_TOL = 0.15   
+        FINAL_YAW_TOL = 0.20   
         
-        # Skip the very first point because we are already standing on it
-        last_index = 1 
+        last_index = 0
         last_debug = 0
         
-        with self.lock:
-            start_pos = self.current_pos.copy()
-        
-        print(f">>> STARTING WAYPOINT NAV: {len(path)} points")
-        print(f">>> Target Destination: {path[-1, :2]}")
+        print(f">>> STARTING WAYPOINT NAV: {path_len} points")
+        print(f">>> Final Target Position: {path[-1, :2]}")
 
         while self.is_playing:
             with self.lock:
@@ -232,19 +229,17 @@ class BreadcrumbFollower:
                 time.sleep(0.5)
                 continue
 
-            # 2. Find Look-ahead Point
-            # Find closest point on path to current position (searching from last known index)
-            remaining_path = path[last_index:]
-            dists = np.linalg.norm(remaining_path[:, :2] - pos, axis=1)
-            closest_idx = np.argmin(dists) + last_index
+            # 2. Find Look-ahead Point with Progress Guard
+            # Search only within a window of 15 points ahead of current to prevent "shortcuts"
+            search_end = min(last_index + 15, path_len)
+            remaining_segment = path[last_index:search_end]
+            dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
+            closest_in_window = np.argmin(dists)
+            last_index = last_index + closest_in_window
             
-            # Ensure index only moves forward
-            if closest_idx > last_index:
-                last_index = closest_idx
-            
-            # Search forward for look-ahead point
+            # Look ahead for steering
             lookahead_idx = last_index
-            for i in range(last_index, len(path)):
+            for i in range(last_index, path_len):
                 d = np.linalg.norm(path[i, :2] - pos)
                 lookahead_idx = i
                 if d > LOOKAHEAD_DIST:
@@ -253,8 +248,51 @@ class BreadcrumbFollower:
             target = path[lookahead_idx]
             dist_to_final = np.linalg.norm(path[-1, :2] - pos)
             
-            # We are in final approach if we are looking at the last point AND have progressed
-            is_final_approach = (lookahead_idx == len(path) - 1) and (last_index > len(path) // 2 or dist_to_final < 1.0)
+            # FINAL APPROACH GUARD: Must be at the end of the index list
+            # This prevents premature exit if the end point is physically near the start
+            is_final_approach = (last_index > path_len * 0.85) or (lookahead_idx == path_len - 1 and dist_to_final < 1.0)
+
+            # 3. Calculate Steering
+            diff = target[:2] - pos
+            if is_final_approach and dist_to_final < FINAL_DIST_TOL:
+                target_yaw = path[-1, 2] # Align to final recorded heading
+            else:
+                target_yaw = np.arctan2(diff[1], diff[0])
+            
+            yaw_err = target_yaw - yaw
+            while yaw_err > np.pi: yaw_err -= 2*np.pi
+            while yaw_err < -np.pi: yaw_err += 2*np.pi
+
+            # 4. Mission Termination (Strictly guarded)
+            if is_final_approach and dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
+                print(f">>> SUCCESS: Destination reached at index {last_index}/{path_len}")
+                break
+
+            # 5. Velocity Control
+            if abs(yaw_err) > 0.8: # Sharp turn
+                vx = 0.0
+                vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+            else:
+                alignment_factor = np.cos(yaw_err)
+                if is_final_approach:
+                    vx = np.clip(0.6 * dist_to_final, 0.15, MAX_VEL)
+                else:
+                    # Minimum 0.2 to ensure movement
+                    vx = np.clip(MAX_VEL * alignment_factor, 0.2, MAX_VEL)
+                
+                vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+
+            self.loco_client.Move(vx, 0.0, vyaw)
+            
+            if time.time() - last_debug > 2.0:
+                print(f"[NAV] Pts: {last_index}/{path_len} | Dist: {dist_to_final:.2f}m | YawErr: {yaw_err:.2f}")
+                last_debug = time.time()
+                
+            time.sleep(0.05)
+
+        self.loco_client.Move(0, 0, 0)
+        self.is_playing = False
+        print(">>> PLAYBACK FINISHED")
 
             # 3. Calculate Steering
             # Aim at look-ahead point's position
