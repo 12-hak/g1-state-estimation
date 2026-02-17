@@ -424,7 +424,11 @@ class BreadcrumbFollower:
                 time.sleep(0.5)
                 continue
 
-            # 2. Sequential Logic
+            # 2. Logic state for this iteration
+            dist_to_final = np.linalg.norm(path[-1, :2] - pos)
+            is_final_approach = False
+            
+            # 3. Sequential Logic
             if not has_started_trail:
                 target = path[0]
                 dist_to_start = np.linalg.norm(target[:2] - pos)
@@ -442,7 +446,7 @@ class BreadcrumbFollower:
                     has_started_trail = True
                 lookahead_idx = 0
             else:
-                # 3. Path Following (Sequential windowed search)
+                # 4. Path Following (Sequential windowed search)
                 search_end = min(last_index + 10, path_len)
                 remaining_segment = path[last_index:search_end]
                 dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
@@ -457,7 +461,6 @@ class BreadcrumbFollower:
                         break
                 target = path[lookahead_idx]
 
-                dist_to_final = np.linalg.norm(path[-1, :2] - pos)
                 is_final_approach = (last_index > path_len * 0.92) or (lookahead_idx == path_len - 1 and dist_to_final < 0.6)
 
                 # Heading calculation for path following
@@ -467,10 +470,12 @@ class BreadcrumbFollower:
                 else:
                     target_yaw = np.arctan2(diff[1], diff[0])
             
-            # Calculate final yaw error
+            # 5. Calculate final yaw error
             yaw_err = target_yaw - yaw
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
+            
+            # 6. Termination check
 
             # 4. Termination
             if is_final_approach and dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
