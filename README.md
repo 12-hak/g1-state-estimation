@@ -119,10 +119,33 @@ Post-processing tool:
 
 ### g1_network_viz.py
 Real-time MuJoCo visualization:
-- Robot pose and joints
-- LiDAR scan (current)
-- 2D localization map
-- UDP streaming from robot
+- **Clean Visualization**: Renders walls and obstacles as thin vertical posts (default: 3cm radius) instead of big blocks.
+- **Incremental Mapping**: Builds a persistent map of the environment as the robot moves.
+- **Dual Positioning**: Shows both raw leg odometry and ICP-corrected position.
+- **High Performance**: Optimized for 50Hz refresh rate.
+
+**Common Commands**:
+```bash
+# Standard visualization (walls + robot)
+python g1_network_viz.py
+
+# Breadcrumb trail only (cleanest view, best for path tracking)
+python g1_network_viz.py --no-walls --breadcrumbs
+
+# Fast mode for low-power PCs
+python g1_network_viz.py --max-points 500
+
+# Custom wall height and thickness
+python g1_network_viz.py --height 2.0 --radius 0.05
+```
+
+**Options**:
+- `--no-walls` - Disable the vertical wall/obstacle markers.
+- `--breadcrumbs` - Enable a sphere-based trail of the robot's history.
+- `--max-points N` - Limit the number of map markers to N (default: 1500).
+- `--height H` - Set height of wall markers in meters (default: 1.5).
+- `--radius R` - Set radius of post markers in meters (default: 0.03).
+- `--demo` - Run in playback demo mode without a network connection.
 
 ## Configuration
 

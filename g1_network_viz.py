@@ -22,6 +22,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+
 # UDP port (must match publisher)
 UDP_PORT = 9870
 
@@ -155,22 +156,19 @@ class G1NetworkVisualizer:
         tile_size = 0.5  # 0.5m tiles
         grid_range = 20  # +/- 20 tiles = 40x40 = 20m x 20m area
         
-        # REMOVED FLOOR TO SEE DOTS CLEARLY
-        '''
-        for i in range(-grid_range, grid_range + 1):
-            for j in range(-grid_range, grid_range + 1):
+        # Create checkerboard grid of boxes (Subtle for context)
+        tile_size = 1.0  # 1m tiles
+        grid_range = 10  # 20m x 20m area
+        
+        for i in range(-grid_range, grid_range):
+            for j in range(-grid_range, grid_range):
                 tile = spec.worldbody.add_geom()
                 tile.type = mujoco.mjtGeom.mjGEOM_BOX
                 tile.size = [tile_size / 2, tile_size / 2, 0.001]
-                tile.pos = [i * tile_size, j * tile_size, -0.001]
+                tile.pos = [i * tile_size + tile_size/2, j * tile_size + tile_size/2, -0.001]
                 tile.contype = 0
                 tile.conaffinity = 0
-                # Checkerboard pattern
-                if (i + j) % 2 == 0:
-                    tile.material = "floor_light"
-                else:
-                    tile.material = "floor_dark"
-        '''
+                tile.rgba = [0.15, 0.15, 0.18, 1.0] if (i + j) % 2 == 0 else [0.12, 0.12, 0.15, 1.0]
 
         # Compile the model
         self.model = spec.compile()
@@ -225,6 +223,15 @@ class G1NetworkVisualizer:
         # Persistent wall tracking
         self.wall_segments = {}  # Dict of wall segments: {grid_key: (point, last_seen_time, confidence)}
         self.wall_timeout = 30.0  # Walls persist for 30 seconds without confirmation
+        
+        # Rendering settings
+        self.wall_height = 1.5  # Wall marker height in meters
+        self.post_radius = 0.03  # Post radius
+        self.max_render_points = 1500  # Reduced for better performance
+        self.show_walls = True
+        self.show_breadcrumbs = False
+        self._debug_first_map = True  # Print debug on first map data
+        self._debug_first_render = True  # Print debug on first render
 
         # UDP receiver
         if not demo_mode:
@@ -360,6 +367,13 @@ class G1NetworkVisualizer:
 
                     current_time = time.time()
                     with self.state_lock:
+                        if self._debug_first_map:
+                            print(f"[DEBUG] First G1M1 packet: {len(new_points)} points")
+                            if len(new_points) > 0:
+                                print(f"[DEBUG]   Point range X: {new_points[:,0].min():.2f} to {new_points[:,0].max():.2f}")
+                                print(f"[DEBUG]   Point range Y: {new_points[:,1].min():.2f} to {new_points[:,1].max():.2f}")
+                                print(f"[DEBUG]   Point range Z: {new_points[:,2].min():.2f} to {new_points[:,2].max():.2f}")
+                            self._debug_first_map = False
                         # PERSISTENT WALLS: Update wall segments with contradiction detection
                         if new_points.size > 0:
                             # Update wall segments
@@ -607,6 +621,14 @@ class G1NetworkVisualizer:
         # Set orientation and ground the robot
         self.data.qpos[3:7] = [1, 0, 0, 0]
         self._ground_robot()
+    
+    def _handle_keyboard(self, viewer):
+        """Handle keyboard input for mode switching."""
+        # Check for 'M' key press to cycle rendering modes
+        # Note: MuJoCo viewer keyboard handling is limited in passive mode
+        # This is a simplified approach - in practice, you might need to use
+        # a different method to capture keyboard input
+        pass  # Placeholder - MuJoCo passive viewer doesn't easily support custom key bindings
 
     def run(self):
         """Main visualization loop."""
@@ -614,7 +636,6 @@ class G1NetworkVisualizer:
         print("Press ESC or close the window to exit.\n")
 
         start_time = time.time()
-
         with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
             # Hide side panel UI menus - double-click on the viewer to toggle them back
             # Note: The viewer UI is controlled by the viewer itself, not easily hidden programmatically
@@ -650,110 +671,131 @@ class G1NetworkVisualizer:
         print("Visualization ended.")
     
     def _render_debug_viz(self, viewer):
-        """Render LiDAR point cloud and position markers."""
+        """Render walls/obstacles as thin vertical posts and position markers."""
         # Reset geom counter for custom rendering
         viewer.user_scn.ngeom = 0
         
-        # Increase geom limit to handle large maps
+        # Ensure we have enough geom slots for rendering
         if viewer.user_scn.maxgeom < 10000:
+            if self._debug_first_render:
+                print(f"[DEBUG] user_scn.maxgeom was {viewer.user_scn.maxgeom}, resizing to 10000")
             viewer.user_scn.maxgeom = 10000
-            viewer.user_scn.geoms = mujoco.MjvGeom(10000) # Re-allocate if needed (pseudo-code, python bindings handle resizing usually)
+            viewer.user_scn.geoms = mujoco.MjvGeom(10000)
+        max_geom = viewer.user_scn.maxgeom
             
         # Converged (ICP) position
         viz_pos_converged = self.position
+        
+        # Pre-compute identity rotation (used for all vertical posts)
+        identity_rot = np.eye(3, dtype=np.float64).flatten()
+        
         with self.state_lock:
             # Only render if we have V4 data (point_cloud exists)
             if not hasattr(self, 'point_cloud'):
                 return
             
-            # --- RENDER MAP (Distance-based color gradient with adaptive detail) ---
+            # Pick which cloud to render: prefer map_cloud (G1M1), fallback to point_cloud (G1S4)
+            render_cloud = None
             if hasattr(self, 'map_cloud') and self.map_cloud.size > 0:
-                # Adaptive downsampling: Keep all close points, downsample far ones
-                # This preserves the high-resolution detail from the C++ adaptive grid
+                render_cloud = self.map_cloud
+            elif self.point_cloud.size > 0:
+                render_cloud = self.point_cloud
+            
+            # --- RENDER POINTS AS THIN VERTICAL POSTS ---
+            if self.show_walls and render_cloud is not None and render_cloud.size > 0:
+                # Filter out NaNs/Infs
+                valid_mask = np.all(np.isfinite(render_cloud), axis=1)
+                render_cloud = render_cloud[valid_mask]
                 
-                # Render all points at full height (clean scan visualization)
-                height = 1.5  # 1.5m tall walls
-                alpha = 0.9
+                if self._debug_first_render:
+                    print(f"[DEBUG] First render: {len(render_cloud)} points in cloud")
+                    print(f"[DEBUG]   Robot pos: {viz_pos_converged}")
+                    print(f"[DEBUG]   maxgeom: {max_geom}, ngeom before: {viewer.user_scn.ngeom}")
                 
-                # Get robot position for distance calculation
                 robot_pos = np.array([viz_pos_converged[0], viz_pos_converged[1]])
+                height = self.wall_height
+                half_height = height / 2.0
+                radius = self.post_radius
                 
-                # Separate points by distance for adaptive rendering
-                close_points = []  # <1m - render all
-                mid_points = []    # 1-2m - render 50%
-                far_points = []    # >2m - render 10%
+                # Distance calculation for downsampling
+                all_points = render_cloud
+                dists = np.linalg.norm(all_points[:, :2] - robot_pos, axis=1)
                 
-                for point in self.map_cloud:
-                    point_2d = np.array([point[0], point[1]])
-                    dist = np.linalg.norm(point_2d - robot_pos)
-                    
-                    if dist < 1.0:
-                        close_points.append(point)
-                    elif dist < 2.0:
-                        mid_points.append(point)
-                    else:
-                        far_points.append(point)
+                # Adaptive downsampling
+                close_mask = dists < 2.0
+                mid_mask = (dists >= 2.0) & (dists < 4.0)
+                far_mask = dists >= 4.0
                 
-                # Build adaptive subset
-                map_subset = []
-                map_subset.extend(close_points)  # All close points
-                map_subset.extend(mid_points[::2])  # Every 2nd mid-range point
-                map_subset.extend(far_points[::10])  # Every 10th far point
+                close_idx = np.where(close_mask)[0]
+                mid_idx = np.where(mid_mask)[0][::3] # More aggressive downsampling
+                far_idx = np.where(far_mask)[0][::8]
                 
-                # Cap at 3000 total for performance (was 1500)
-                if len(map_subset) > 3000:
-                    # If still too many, downsample uniformly
-                    step = len(map_subset) // 3000
-                    map_subset = map_subset[::step]
+                render_idx = np.concatenate([close_idx, mid_idx, far_idx])
+                if len(render_idx) > self.max_render_points:
+                    step = len(render_idx) // self.max_render_points
+                    render_idx = render_idx[::step]
                 
-                for point in map_subset:
-                    if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
+                # BOX is faster to render than CYLINDER in large quantities
+                post_size = np.array([radius, radius, half_height], dtype=np.float64)
+                
+                for idx in render_idx:
+                    if viewer.user_scn.ngeom >= max_geom:
                         break
                     
-                    # Calculate distance from robot to point
-                    point_2d = np.array([point[0], point[1]])
-                    dist = np.linalg.norm(point_2d - robot_pos)
+                    point = all_points[idx]
+                    dist = dists[idx]
                     
-                    # Color gradient: Red (close) -> Yellow (mid) -> Green (far)
-                    # Point size: Larger boxes that overlap to form solid walls
+                    # Color gradient
                     if dist < 1.0:
-                        # Red to Yellow (0-1m) - SMALL boxes for detail
-                        t = dist  # 0 to 1
-                        color = np.array([1.0, t, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.024  # 2.4cm - overlapping boxes
-                    elif dist < 2.0:
-                        # Yellow to Green (1-2m) - MEDIUM boxes
-                        t = dist - 1.0  # 0 to 1
-                        color = np.array([1.0 - t, 1.0, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.045  # 4.5cm - standard overlapping
+                        color = np.array([1.0, 1.0, 1.0, 0.9], dtype=np.float32)
+                    elif dist < 3.0:
+                        t = (dist - 1.0) / 2.0
+                        color = np.array([1.0, 1.0 - 0.5*t, 1.0 - t, 0.8], dtype=np.float32)
                     else:
-                        # Green (2m+) - LARGE boxes
-                        color = np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32)
-                        point_size = 0.075  # 7.5cm - chunky overlapping
+                        color = np.array([1.0, 0.5, 0.0, 0.7], dtype=np.float32)
                     
-                    # Project as a Vertical Box (Wall Segment) - 1.5m tall from ground
-                    viz_pt = np.array(point, dtype=np.float64)
-                    viz_pt[2] = height / 2  # Center at 0.75m (ground=0, top=1.5m)
+                    # Vertical box
+                    post_pos = np.array([point[0], point[1], half_height], dtype=np.float64)
                     
                     mujoco.mjv_initGeom(
                         viewer.user_scn.geoms[viewer.user_scn.ngeom],
                         mujoco.mjtGeom.mjGEOM_BOX,
-                        np.array([point_size/2, point_size/2, height/2], dtype=np.float64),  # Half-extents
-                        viz_pt,
-                        np.eye(3, dtype=np.float64).flatten(),
+                        post_size,
+                        post_pos,
+                        identity_rot,
                         color
                     )
                     viewer.user_scn.ngeom += 1
+                
+                if self._debug_first_render:
+                    print(f"[DEBUG]   ngeom after posts: {viewer.user_scn.ngeom}")
+                    self._debug_first_render = False
             
-            # --- RENDER ROBOT PATH (Connected line) - Optimized ---
-            if len(self.robot_path) > 1:
-                # Downsample path for performance (max 200 points)
+            # --- RENDER ROBOT PATH (Connected line and/or Breadcrumbs) ---
+            if len(self.robot_path) > 1 and viewer.user_scn.ngeom < max_geom:
+                # Downsample path
                 step = max(1, len(self.robot_path) // 200)
                 path_subset = self.robot_path[::step]
                 
+                # Draw breadcrumbs (Spheres) if enabled
+                if self.show_breadcrumbs:
+                    for i, pos in enumerate(path_subset):
+                        if viewer.user_scn.ngeom >= max_geom:
+                            break
+                        age_factor = i / len(path_subset)
+                        mujoco.mjv_initGeom(
+                            viewer.user_scn.geoms[viewer.user_scn.ngeom],
+                            mujoco.mjtGeom.mjGEOM_SPHERE,
+                            np.array([0.03, 0, 0], dtype=np.float64),
+                            np.array([pos[0], pos[1], 0.015], dtype=np.float64),
+                            identity_rot,
+                            np.array([0.2, 0.8, 1.0, 0.3 + 0.5 * age_factor], dtype=np.float32)
+                        )
+                        viewer.user_scn.ngeom += 1
+                
                 # Draw connected line segments
                 for i in range(len(path_subset) - 1):
-                    if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
+                    if viewer.user_scn.ngeom >= max_geom:
                         break
                     
                     pos1 = path_subset[i]
@@ -769,11 +811,6 @@ class G1NetworkVisualizer:
                     
                     # Normalize direction
                     direction = direction / length
-                    
-                    # Create rotation matrix to align capsule with path
-                    # Capsule default axis is Z, we want it along XY plane
-                    z_axis = np.array([0, 0, 1])
-                    path_axis = np.array([direction[0], direction[1], 0])
                     
                     # Rotation from Z to path direction
                     angle = np.arctan2(direction[1], direction[0])
@@ -798,14 +835,14 @@ class G1NetworkVisualizer:
                     viewer.user_scn.ngeom += 1
             
             # --- RENDER CONVERGED DOT (Green) ---
-            if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
+            if viewer.user_scn.ngeom < max_geom:
                 # Large distinct dot for the single source of truth
                 mujoco.mjv_initGeom(
                     viewer.user_scn.geoms[viewer.user_scn.ngeom],
                     mujoco.mjtGeom.mjGEOM_SPHERE,
                     np.array([0.06, 0, 0], dtype=np.float64),
                     np.array([viz_pos_converged[0], viz_pos_converged[1], 0.02], dtype=np.float64),
-                    np.eye(3, dtype=np.float64).flatten(),
+                    identity_rot,
                     np.array([0, 1, 0, 0.8], dtype=np.float32)  # Bright Solid Green
                 )
                 viewer.user_scn.ngeom += 1
@@ -821,6 +858,34 @@ def main():
         action="store_true",
         help="Run in demo mode without network connection",
     )
+    parser.add_argument(
+        "--height",
+        type=float,
+        default=1.5,
+        help="Wall marker height in meters (default: 1.5)",
+    )
+    parser.add_argument(
+        "--radius",
+        type=float,
+        default=0.03,
+        help="Post radius in meters (default: 0.03)",
+    )
+    parser.add_argument(
+        "--no-walls",
+        action="store_true",
+        help="Disable wall/obstacle visualization",
+    )
+    parser.add_argument(
+        "--breadcrumbs",
+        action="store_true",
+        help="Enable breadcrumb trail (spheres) for robot history",
+    )
+    parser.add_argument(
+        "--max-points",
+        type=int,
+        default=1500,
+        help="Maximum points to render in map (default: 1500)",
+    )
 
     args = parser.parse_args()
 
@@ -829,8 +894,17 @@ def main():
     else:
         print("Waiting for robot state from network...")
         print("Make sure g1_state_publisher.py is running on the G1")
-
+    
     visualizer = G1NetworkVisualizer(demo_mode=args.demo)
+    visualizer.wall_height = args.height
+    visualizer.post_radius = args.radius
+    visualizer.show_walls = not args.no_walls
+    visualizer.show_breadcrumbs = args.breadcrumbs
+    visualizer.max_render_points = args.max_points
+    
+    print(f"Wall markers: {'Enabled' if visualizer.show_walls else 'Disabled'}")
+    print(f"Breadcrumbs: {'Enabled' if visualizer.show_breadcrumbs else 'Disabled'}")
+    print(f"Max points: {visualizer.max_render_points}")
     visualizer.run()
 
 
