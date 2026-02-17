@@ -294,65 +294,6 @@ class BreadcrumbFollower:
         self.is_playing = False
         print(">>> PLAYBACK FINISHED")
 
-            # 3. Calculate Steering
-            # Aim at look-ahead point's position
-            diff = target[:2] - pos
-            dist_to_lookahead = np.linalg.norm(diff)
-            
-            if is_final_approach and dist_to_final < FINAL_DIST_TOL:
-                # We are at the end, just align orientation
-                target_yaw = path[-1, 2]
-            else:
-                # Steer towards the path
-                target_yaw = np.arctan2(diff[1], diff[0])
-            
-            yaw_err = target_yaw - yaw
-            while yaw_err > np.pi: yaw_err -= 2*np.pi
-            while yaw_err < -np.pi: yaw_err += 2*np.pi
-
-            # 4. Check Mission Termination
-            if dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
-                print(">>> DESTINATION REACHED")
-                break
-
-            # 5. Velocity Control (Standard Waypoint Management)
-            # If heading error is large (> 45 deg), stop and turn
-            if abs(yaw_err) > 0.8:
-                vx = 0.0
-                vyaw = np.clip(1.5 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
-            else:
-                # Linear velocity scales with distance and heading alignment
-                # Slow down if heading is not perfect
-                alignment_factor = np.cos(yaw_err) 
-                
-                if is_final_approach:
-                    # Ramp down gracefully
-                    vx = np.clip(0.6 * dist_to_final, 0.15, MAX_VEL)
-                else:
-                    # Maintain cruising speed
-                    vx = MAX_VEL * alignment_factor
-                
-                vx = max(0.0, vx)
-                vyaw = np.clip(1.5 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
-
-            # 6. Command
-            self.loco_client.Move(vx, 0.0, vyaw)
-            
-            if time.time() - last_debug > 2.0:
-                mode = "FINAL" if is_final_approach else "CRUISE"
-                print(f"[NAV] {mode} | Target: {lookahead_idx}/{len(path)-1} | Dist: {dist_to_final:.2f}m | YawErr: {yaw_err:.2f}")
-                last_debug = time.time()
-                
-            time.sleep(0.05)
-
-        self.loco_client.Move(0, 0, 0)
-        self.is_playing = False
-        print(">>> PLAYBACK COMPLETE")
-
-    def run(self):
-        while True:
-            time.sleep(1)
-
     def run(self):
         while True:
             time.sleep(1)
