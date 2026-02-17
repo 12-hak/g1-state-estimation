@@ -76,6 +76,12 @@ target_link_libraries(g1_localization_node
     g1_localization_lib
 )
 
+# New Visualizer Tool
+add_executable(g1_localizer_viz src/g1_localizer_viz.cpp)
+target_link_libraries(g1_localizer_viz
+    g1_localization_lib
+)
+
 # LiDAR Recorder (standalone)
 add_executable(g1_lidar_recorder 
     src/g1_lidar_recorder.cpp

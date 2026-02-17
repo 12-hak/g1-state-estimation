@@ -38,6 +38,10 @@ public:
     void stop();
     
     LocalizationState getState() const;
+    
+    // Visualization Accessors
+    std::vector<LidarPoint> getGlobalMap() const;
+    std::vector<Eigen::Vector2f> getLatestScan() const;
 
 private:
     // DDS callbacks

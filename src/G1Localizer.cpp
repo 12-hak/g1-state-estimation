@@ -573,5 +573,20 @@ LocalizationState G1Localizer::getState() const {
     return state_;
 }
 
+std::vector<Eigen::Vector2f> G1Localizer::getGlobalMap() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    std::vector<Eigen::Vector2f> map;
+    map.reserve(global_map_.size());
+    for(const auto& p : global_map_) {
+        map.push_back(p.pt);
+    }
+    return map;
+}
+
+std::vector<Eigen::Vector2f> G1Localizer::getLatestScan() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return latest_scan_2d_;
+}
+
 } // namespace g1_localization
 
