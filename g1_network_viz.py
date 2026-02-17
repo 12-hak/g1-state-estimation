@@ -386,14 +386,12 @@ class G1NetworkVisualizer:
                                 # Grid key for deduplication (5cm grid)
                                 key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
                                 
-                                # Add or update wall segment
+                                # Add or update wall segment: (point, last_time, hit_count, miss_count)
                                 if key in self.wall_segments:
-                                    # Existing wall - update timestamp and increase confidence
-                                    old_pt, old_time, confidence = self.wall_segments[key]
-                                    self.wall_segments[key] = (pt, current_time, min(confidence + 0.1, 1.0))
+                                    old_pt, old_time, hits, misses = self.wall_segments[key]
+                                    self.wall_segments[key] = (pt, current_time, min(hits + 1, 30), 0)
                                 else:
-                                    # New wall segment
-                                    self.wall_segments[key] = (pt, current_time, 0.5)
+                                    self.wall_segments[key] = (pt, current_time, 1, 0)
                             
                             # Check for contradictions: if robot passes through a wall, remove it
                             robot_pos = self.position[:2] if hasattr(self, 'position') else np.array([0, 0])
@@ -419,8 +417,11 @@ class G1NetworkVisualizer:
                                 del self.wall_segments[key]
                             
                             # Build map cloud from wall segments for rendering
-                            self.map_cloud = np.array([pt for pt, _, _ in self.wall_segments.values()])
-                            if self.map_cloud.size == 0:
+                            # Default hit_count needed = 3 for G1M1 data
+                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 3]
+                            if self.map_cloud_data:
+                                self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
+                            else:
                                 self.map_cloud = np.empty((0, 3))
                             self.last_good_scan_time = current_time
                         # Always update packet time to track when we last received data
@@ -463,93 +464,87 @@ class G1NetworkVisualizer:
                     self.state_received = True
 
                     # --- INTEGRATE SCAN INTO PERSISTENT MAP ---
-                    if point_cloud.size > 0:
-                        # 1. Transform points from Robot Frame to World Frame
-                        # IMU quat to rotation matrix (w, x, y, z)
+                    if point_cloud.size > 1: # Need at least 2 points for neighbor filter
+                        # 1. NEIGHBOR FILTER: Only keep points that have another point close by
+                        # This filters isolated noise/dust
+                        neighbor_threshold_sq = 0.15**2 
+                        is_solid = np.zeros(len(point_cloud), dtype=bool)
+                        
+                        # Geometric connectivity check (Simple O(N^2) but N is small (100-300))
+                        for i in range(len(point_cloud)):
+                            p1 = point_cloud[i]
+                            # Check nearby points (usually points are roughly ordered by scan)
+                            # We check 5 points before and after for speed
+                            start_j = max(0, i - 5)
+                            end_j = min(len(point_cloud), i + 6)
+                            for j in range(start_j, end_j):
+                                if i == j: continue
+                                d_sq = np.sum((p1 - point_cloud[j])**2)
+                                if d_sq < neighbor_threshold_sq:
+                                    is_solid[i] = True
+                                    break
+                        
+                        solid_points = point_cloud[is_solid]
+                        
+                        # 2. Transform solid points to world frame
                         w, x, y, z = imu_quat
-                        xx, yy, zz = x*x, y*y, z*z
-                        xy, xz, yz = x*y, x*z, y*z
-                        wx, wy, wz = w*x, w*y, w*z
-                        
                         R = np.array([
-                            [1 - 2*(yy + zz), 2*(xy - wz),     2*(xz + wy)],
-                            [2*(xy + wz),     1 - 2*(xx + zz), 2*(yz - wx)],
-                            [2*(xz - wy),     2*(yz + wx),     1 - 2*(xx + yy)]
+                            [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
+                            [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+                            [2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y)]
                         ])
-                        
-                        # Apply rotation and shift by ICP world position
-                        world_pts = (point_cloud @ R.T) + self.position
-                        
-                        # 2. ANGULAR CLEAR: Only clear history in the wedge we are currently scanning
-                        # This avoids the "flashing" caused by clearing the whole circle every packet.
+                        world_pts = (solid_points @ R.T) + self.position
                         robot_xy = self.position[:2]
-                        # Get angles of active points in robot frame
+                        
+                        # 3. HYSTERESIS CLEARING & UPDATING
+                        # Get angular wedge of current scan
                         angles = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])
-                        angle_min = np.min(angles) - 0.05 # Add small buffer
-                        angle_max = np.max(angles) + 0.05
+                        angle_min, angle_max = np.min(angles), np.max(angles)
                         
-                        # Create a copy of keys to check against the active wedge
-                        lidar_range_sq = 4.5**2 # Clear slightly beyond mapping range
-                        keys_to_clear = []
-                        for k, v in self.wall_segments.items():
-                            pt_world = v[0]
-                            # pt in robot frame for angle check
-                            pt_rel = pt_world[:2] - robot_xy
-                            dist_sq = np.sum(pt_rel**2)
-                            
-                            if dist_sq < lidar_range_sq:
-                                # Rotate rel point back to robot frame for angle check
-                                # R_inv = R.T (since it's a rotation matrix)
-                                pt_robot_xy = np.array([
-                                    pt_rel[0] * R[0,0] + pt_rel[1] * R[1,0],
-                                    pt_rel[0] * R[0,1] + pt_rel[1] * R[1,1]
-                                ])
-                                pt_angle = np.arctan2(pt_robot_xy[1], pt_robot_xy[0])
-                                
-                                # If this historical point is in the wedge we just scanned, clear it
-                                # (Handle wrap-around logic for angles if needed, but simple wedge works for slips)
-                                if angle_min <= pt_angle <= angle_max:
-                                    keys_to_clear.append(k)
+                        # Track which cells were hit by this specific scan
+                        hit_keys = set()
+                        valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0)
                         
-                        for k in keys_to_clear:
-                            del self.wall_segments[k]
-                            
-                        # 3. Filter for mapping (ignore ground, high points, and robot's own body)
-                        dist_sq_to_robot = np.sum((world_pts[:, :2] - robot_xy)**2, axis=1)
-                        valid_mask = (world_pts[:, 2] > 0.15) & (world_pts[:, 2] < 2.0) & (dist_sq_to_robot > 0.35**2)
-                        mapping_pts = world_pts[valid_mask]
-                        
-                        # 4. STABLE VOXEL MAPPING
-                        for pt in mapping_pts:
+                        for pt in world_pts[valid_mask]:
                             key = (round(pt[0] / 0.05), round(pt[1] / 0.05))
+                            hit_keys.add(key)
+                            
                             if key in self.wall_segments:
-                                mean_pt, last_time, count = self.wall_segments[key]
-                                new_count = min(count + 1, 30)
-                                new_mean = (mean_pt * count + pt) / (count + 1)
-                                self.wall_segments[key] = (new_mean, current_time, new_count)
+                                mean_pt, last_time, hits, misses = self.wall_segments[key]
+                                self.wall_segments[key] = ((mean_pt * hits + pt)/(hits+1), current_time, min(hits+1, 30), 0)
                             else:
-                                self.wall_segments[key] = (pt, current_time, 1)
+                                self.wall_segments[key] = (pt, current_time, 1, 0)
+
+                        # 4. Increment misses for points in wedge that WERE NOT hit
+                        keys_to_check = [k for k, v in self.wall_segments.items() 
+                                       if np.linalg.norm(v[0][:2] - robot_xy) < 4.0]
+                        
+                        for k in keys_to_check:
+                            if k in hit_keys: continue
+                            
+                            pt_world = self.wall_segments[k][0]
+                            pt_rel = pt_world[:2] - robot_xy
+                            # Rotate rel point back to robot frame for wedge check
+                            pt_robot_xy = np.dot(R[:2, :2].T, pt_rel)
+                            pt_angle = np.arctan2(pt_robot_xy[1], pt_robot_xy[0])
+                            
+                            if angle_min <= pt_angle <= angle_max:
+                                mean_pt, last_time, hits, misses = self.wall_segments[k]
+                                # If it's in range but missed, it might be a ghost or moved
+                                if misses > 10:
+                                    del self.wall_segments[k]
+                                else:
+                                    self.wall_segments[k] = (mean_pt, last_time, hits, misses + 1)
                         
                         # 5. Periodic maintenance (Cleanup & Rebuild cloud)
                         if not hasattr(self, '_last_map_maintenance'): self._last_map_maintenance = 0
-                        
-                        if current_time - self._last_map_maintenance > 0.08: # Slightly faster rebuild
-                            # Remove expired points (timeout = 600s)
-                            expired_keys = [k for k, v in self.wall_segments.items() 
-                                           if current_time - v[1] > self.wall_timeout]
-                            for k in expired_keys: del self.wall_segments[k]
-                            
+                        if current_time - self._last_map_maintenance > 0.1:
                             # Rebuild map cloud for the visualizer
-                            # SHARPENING: Require 5 hits for a solid wall
-                            if self.wall_segments:
-                                self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 5]
-                                if self.map_cloud_data:
-                                    self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
-                                else:
-                                    self.map_cloud = np.empty((0, 3))
+                            self.map_cloud_data = [v for v in self.wall_segments.values() if v[2] >= 5]
+                            if self.map_cloud_data:
+                                self.map_cloud = np.array([v[0] for v in self.map_cloud_data])
                             else:
                                 self.map_cloud = np.empty((0, 3))
-                                
                             self._last_map_maintenance = current_time
 
             elif magic == b"G1S3" and len(data) >= PACKET_SIZE_V3:
