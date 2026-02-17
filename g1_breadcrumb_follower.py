@@ -135,14 +135,16 @@ class BreadcrumbFollower:
         return np.arctan2(siny_cosp, cosy_cosp)
 
     def _sport_state_callback(self, msg: SportModeState_):
-        # Fallback if UDP is not active
-        if self.received_udp:
-            return
-            
         with self.lock:
+            # Always update obstacle distance for safety
+            self.front_obstacle_dist = msg.range_obstacle[0]
+            
+            # Only use sport mode for position if UDP localizer is NOT active
+            if self.received_udp:
+                return
+                
             self.current_pos = np.array([msg.position[0], msg.position[1]])
             self.current_yaw = self._get_yaw(msg.imu_state.quaternion)
-            self.front_obstacle_dist = msg.range_obstacle[0]
             
             if self.is_recording:
                 self._add_breadcrumb()
