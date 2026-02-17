@@ -196,94 +196,108 @@ class BreadcrumbFollower:
         threading.Thread(target=self._playback_loop, daemon=True).start()
 
     def _playback_loop(self):
-        target_index = 0
-        path = list(self.recorded_path)
+        # 1. Path Setup
+        path = np.array(self.recorded_path)
+        if len(path) < 2:
+            self.is_playing = False
+            return
+
+        # Controller Parameters
+        LOOKAHEAD_DIST = 0.6   # Meters to look ahead on path for steering
+        MAX_VEL = 0.5          # Max linear speed
+        MAX_YAW_VEL = 1.0      # Max angular speed
+        FINAL_DIST_TOL = 0.25  # Final position tolerance
+        FINAL_YAW_TOL = 0.12   # Final yaw tolerance
         
-        # Controller Gains
-        K_LINEAR = 0.7
-        K_ANGULAR = 1.8
-        MAX_VEL = 0.5
-        MAX_YAW = 1.0
-        
-        # Thresholds
-        WALK_DIST_THRESHOLD = 0.70  # Very loose for fluid motion
-        ROT_DIST_THRESHOLD = 0.30   # Required for final point or turn-in-place
-        YAW_THRESHOLD = 0.10        # 6 degrees for accurate rotation
-        
+        last_index = 0
         last_debug = 0
-        print(">>> Starting Playback Thread...")
-        
-        while self.is_playing and target_index < len(path):
-            target = path[target_index]
+        print(f">>> STARTING WAYPOINT NAV: {len(path)} points")
+
+        while self.is_playing:
             with self.lock:
                 pos = self.current_pos.copy()
                 yaw = self.current_yaw
                 obs = self.front_obstacle_dist
             
+            # Obstacle Safety
             if obs < 0.7:
                 self.loco_client.Move(0, 0, 0)
                 time.sleep(0.5)
                 continue
 
-            # 1. Logic: Is this a precision waypoint?
-            is_last = (target_index == len(path) - 1)
-            is_rotation_point = False
-            if not is_last:
-                next_pt = path[target_index + 1]
-                if np.linalg.norm(next_pt[:2] - target[:2]) < 0.1:
-                    is_rotation_point = True
-
-            # 2. Calculate Errors
-            diff = target[:2] - pos
-            dist = np.linalg.norm(diff)
+            # 2. Find Look-ahead Point
+            # Find closest point on path to current position (searching from last known index)
+            remaining_path = path[last_index:]
+            dists = np.linalg.norm(remaining_path[:, :2] - pos, axis=1)
+            closest_idx = np.argmin(dists) + last_index
+            last_index = closest_idx
             
-            # Heading: Aim at the point if far, use recorded yaw if close
-            if dist > 0.4:
-                target_yaw = np.arctan2(diff[1], diff[0])
+            # Search forward for look-ahead point
+            lookahead_idx = closest_idx
+            for i in range(closest_idx, len(path)):
+                d = np.linalg.norm(path[i, :2] - pos)
+                lookahead_idx = i
+                if d > LOOKAHEAD_DIST:
+                    break
+            
+            target = path[lookahead_idx]
+            dist_to_final = np.linalg.norm(path[-1, :2] - pos)
+            is_final_approach = (lookahead_idx == len(path) - 1) and (dist_to_final < 0.8)
+
+            # 3. Calculate Steering
+            # Aim at look-ahead point's position
+            diff = target[:2] - pos
+            dist_to_lookahead = np.linalg.norm(diff)
+            
+            if is_final_approach and dist_to_final < FINAL_DIST_TOL:
+                # We are at the end, just align orientation
+                target_yaw = path[-1, 2]
             else:
-                target_yaw = target[2]
+                # Steer towards the path
+                target_yaw = np.arctan2(diff[1], diff[0])
             
             yaw_err = target_yaw - yaw
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
-            
-            # Rate-limited debug
-            if time.time() - last_debug > 2.0:
-                pt_type = "PRECISION" if is_rotation_point or is_last else "FLUID"
-                print(f"[DEBUG] Target {target_index} ({pt_type}): dist={dist:.2f}m, yaw_err={yaw_err:.2f}rad")
-                last_debug = time.time()
 
-            # 3. Check Transition
-            if is_last or is_rotation_point:
-                if dist < ROT_DIST_THRESHOLD and abs(yaw_err) < YAW_THRESHOLD:
-                    print(f">>> ALIGNED with precision point {target_index}")
-                    target_index += 1
-                    continue
-            else:
-                if dist < WALK_DIST_THRESHOLD:
-                    print(f">>> PASSED waypoint {target_index}")
-                    target_index += 1
-                    continue
-                
-            # 4. Control Blend
-            # If yaw error > 45 degrees, turn on spot
+            # 4. Check Mission Termination
+            if dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
+                print(">>> DESTINATION REACHED")
+                break
+
+            # 5. Velocity Control (Standard Waypoint Management)
+            # If heading error is large (> 45 deg), stop and turn
             if abs(yaw_err) > 0.8:
                 vx = 0.0
-                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
+                vyaw = np.clip(1.5 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
             else:
-                if dist > (ROT_DIST_THRESHOLD if (is_last or is_rotation_point) else 0.1):
-                    # Higher min velocity (0.2) to prevent stalling
-                    vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
+                # Linear velocity scales with distance and heading alignment
+                # Slow down if heading is not perfect
+                alignment_factor = np.cos(yaw_err) 
+                
+                if is_final_approach:
+                    # Ramp down gracefully
+                    vx = np.clip(0.6 * dist_to_final, 0.15, MAX_VEL)
                 else:
-                    vx = 0.0
-                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
-            
+                    # Maintain cruising speed
+                    vx = MAX_VEL * alignment_factor
+                
+                vx = max(0.0, vx)
+                vyaw = np.clip(1.5 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+
+            # 6. Command
             self.loco_client.Move(vx, 0.0, vyaw)
+            
+            if time.time() - last_debug > 2.0:
+                mode = "FINAL" if is_final_approach else "CRUISE"
+                print(f"[NAV] {mode} | Target: {lookahead_idx}/{len(path)-1} | Dist: {dist_to_final:.2f}m | YawErr: {yaw_err:.2f}")
+                last_debug = time.time()
+                
             time.sleep(0.05)
-        
+
         self.loco_client.Move(0, 0, 0)
-        print("\n>>> MISSION COMPLETE")
         self.is_playing = False
+        print(">>> PLAYBACK COMPLETE")
 
     def run(self):
         while True:
