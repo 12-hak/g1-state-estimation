@@ -389,56 +389,47 @@ class BreadcrumbFollower:
             self.is_playing = False
             return
 
-        # Controller Parameters
-        LOOKAHEAD_DIST = 0.5   
-        MAX_VEL = 0.5          
-        MAX_YAW_VEL = 1.0      
-        FINAL_DIST_TOL = 0.20  
-        FINAL_YAW_TOL = 0.15   
+        # High-Precision Controller Parameters
+        LOOKAHEAD_DIST = 0.30  # Tighter look-ahead for better curve tracking
+        MAX_VEL = 0.45         # Slightly lower max for stability
+        MAX_YAW_VEL = 1.2      # Faster reaction
+        FINAL_DIST_TOL = 0.15  # 15cm precision
+        FINAL_YAW_TOL = 0.10   # 6 degree precision
+        K_ANGULAR = 2.2        # Stronger heading pull
         
-        # We start from the absolute beginning of the trail
         last_index = 0
         last_debug = 0
         has_started_trail = False
         
-        print(f">>> STARTING WAYPOINT NAV: {path_len} points")
-        print(f">>> Start Position: {path[0, :2]}")
-        print(f">>> Final Destination: {path[-1, :2]}")
-        if self.received_udp:
-            print(">>> Navigation Source: High-Precision Localizer (UDP)")
-        else:
-            print(">>> WARNING: Using SLAM-less Fallback (DDS). Position drift likely.")
-
+        print(f">>> STARTING HIGH-PRECISION NAV: {path_len} points")
+        
         while self.is_playing:
             with self.lock:
                 pos = self.current_pos.copy()
                 yaw = self.current_yaw
                 obs = self.front_obstacle_dist
             
-            # Obstacle Safety
             if obs < 0.7:
                 self.loco_client.Move(0, 0, 0)
                 time.sleep(0.5)
                 continue
 
-            # 2. Strict Start Logic: Must go to Point 0 first
+            # 2. Sequential Logic
             if not has_started_trail:
                 target = path[0]
                 dist_to_start = np.linalg.norm(target[:2] - pos)
-                if dist_to_start < 0.3:
-                    print(">>> REACHED START OF TRAIL. Switching to path following.")
+                if dist_to_start < 0.25:
+                    print(">>> ON TRAIL. Switching to precision following.")
                     has_started_trail = True
                 lookahead_idx = 0
             else:
-                # 3. Path Following (Sequential search)
-                # Search window ahead of current progress
-                search_end = min(last_index + 15, path_len)
+                # Sequential windowed search
+                search_end = min(last_index + 10, path_len)
                 remaining_segment = path[last_index:search_end]
                 dists = np.linalg.norm(remaining_segment[:, :2] - pos, axis=1)
                 closest_in_window = np.argmin(dists)
                 last_index = last_index + closest_in_window
                 
-                # Look ahead for steering
                 lookahead_idx = last_index
                 for i in range(last_index, path_len):
                     d = np.linalg.norm(path[i, :2] - pos)
@@ -448,12 +439,12 @@ class BreadcrumbFollower:
                 target = path[lookahead_idx]
 
             dist_to_final = np.linalg.norm(path[-1, :2] - pos)
-            is_final_approach = has_started_trail and ((last_index > path_len * 0.9) or (lookahead_idx == path_len - 1 and dist_to_final < 0.8))
+            is_final_approach = has_started_trail and ((last_index > path_len * 0.92) or (lookahead_idx == path_len - 1 and dist_to_final < 0.6))
 
-            # 4. Calculate Steering
+            # 3. Calculate Errors
             diff = target[:2] - pos
-            if is_final_approach and dist_to_final < FINAL_DIST_TOL:
-                target_yaw = path[-1, 2] # Final recorded pose
+            if is_final_approach and dist_to_final < 0.3:
+                target_yaw = path[-1, 2] 
             else:
                 target_yaw = np.arctan2(diff[1], diff[0])
             
@@ -461,28 +452,33 @@ class BreadcrumbFollower:
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
 
-            # 5. Mission Termination
+            # 4. Termination
             if is_final_approach and dist_to_final < FINAL_DIST_TOL and abs(yaw_err) < FINAL_YAW_TOL:
-                print(f">>> SUCCESS: Destination reached.")
+                print(f">>> TARGET SECURED.")
                 break
 
-            # 6. Velocity Control
-            if abs(yaw_err) > 0.8: # Aligning
+            # 5. Precision Velocity Control
+            # If heading error exceeds 20 degrees, stop and rotate to stay on path
+            if abs(yaw_err) > 0.35: 
                 vx = 0.0
-                vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
             else:
-                alignment_factor = np.cos(yaw_err)
+                # Speed scales with the SQUARE of alignment. 
+                # This causes a rapid but smooth slowdown as the robot enters a turn.
+                alignment_factor = np.cos(yaw_err) ** 2
+                
                 if is_final_approach:
-                    vx = np.clip(0.6 * dist_to_final, 0.15, MAX_VEL)
+                    vx = np.clip(0.8 * dist_to_final, 0.12, MAX_VEL)
                 else:
+                    # Cruising: slow down for turns, maintain 0.2m/s minimum
                     vx = np.clip(MAX_VEL * alignment_factor, 0.2, MAX_VEL)
                 
-                vyaw = np.clip(1.8 * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
+                vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW_VEL, MAX_YAW_VEL)
 
             self.loco_client.Move(vx, 0.0, vyaw)
             
             if time.time() - last_debug > 2.0:
-                print(f"[NAV] Progress: {last_index}/{path_len} | DistToGoal: {dist_to_final:.2f}m")
+                print(f"[NAV] Pts: {last_index}/{path_len} | Err: {dist_to_final:.2f}m | Yaw: {yaw_err:.2f}")
                 last_debug = time.time()
                 
             time.sleep(0.05)
