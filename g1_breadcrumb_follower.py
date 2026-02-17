@@ -151,18 +151,34 @@ class BreadcrumbFollower:
 
     def _add_breadcrumb(self):
         # Should be called with lock held
-        if not self.recorded_path or np.linalg.norm(self.current_pos - self.recorded_path[-1]) > 0.3:
-            self.recorded_path.append(self.current_pos.copy())
-            print(f"[REC] Point {len(self.recorded_path)}: {self.current_pos}")
+        if not self.recorded_path:
+            self.recorded_path.append(np.array([self.current_pos[0], self.current_pos[1], self.current_yaw]))
+            print(f"[REC] Start Point: {self.recorded_path[-1]}")
+            return
+
+        last = self.recorded_path[-1]
+        dist = np.linalg.norm(self.current_pos - last[:2])
+        
+        # Calculate yaw difference
+        yaw_err = self.current_yaw - last[2]
+        while yaw_err > np.pi: yaw_err -= 2*np.pi
+        while yaw_err < -np.pi: yaw_err += 2*np.pi
+        yaw_diff = abs(yaw_err)
+
+        # Trigger on small distance (0.1m) or rotation (0.1 rad)
+        if dist > 0.1 or yaw_diff > 0.1:
+            self.recorded_path.append(np.array([self.current_pos[0], self.current_pos[1], self.current_yaw]))
+            if len(self.recorded_path) % 10 == 0:
+                print(f"[REC] Captured {len(self.recorded_path)} points...")
 
     def _toggle_recording(self):
         self.is_recording = not self.is_recording
         if self.is_recording:
             self.recorded_path = []
             self.is_playing = False
-            print("\n>>> RECORDING STARTED")
+            print("\n>>> RECORDING STARTED (High Precision Mode)")
         else:
-            print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} points.")
+            print(f"\n>>> RECORDING STOPPED. Saved {len(self.recorded_path)} breadcrumbs.")
 
     def _start_playback(self):
         if self.is_playing:
@@ -176,16 +192,24 @@ class BreadcrumbFollower:
         
         self.is_recording = False
         self.is_playing = True
-        print(f"\n>>> PLAYBACK STARTED. Path contains {len(self.recorded_path)} points.")
+        print(f"\n>>> PLAYBACK STARTED. Path: {len(self.recorded_path)} points.")
         threading.Thread(target=self._playback_loop, daemon=True).start()
 
     def _playback_loop(self):
         target_index = 0
         path = list(self.recorded_path)
-        K_LINEAR = 0.5
-        K_ANGULAR = 1.0
-        MAX_VEL = 0.6
-        MAX_YAW = 0.8
+        
+        # Controller Gains
+        K_LINEAR = 0.6
+        K_ANGULAR = 1.2
+        MAX_VEL = 0.5
+        MAX_YAW = 1.0
+        
+        # Thresholds
+        DIST_THRESHOLD = 0.15 # 15cm precision
+        YAW_THRESHOLD = 0.1   # ~6 degree precision
+        
+        print(">>> Moving to first point...")
         
         while self.is_playing and target_index < len(path):
             target = path[target_index]
@@ -194,29 +218,44 @@ class BreadcrumbFollower:
                 yaw = self.current_yaw
                 obs = self.front_obstacle_dist
             
-            if obs < 0.8:
+            if obs < 0.7:
                 self.loco_client.Move(0, 0, 0)
                 time.sleep(0.5)
                 continue
 
-            diff = target - pos
+            # 1. Calculate Errors
+            diff = target[:2] - pos
             dist = np.linalg.norm(diff)
             
-            if dist < 0.4:
-                print(f">>> ARRIVED at breadcrumb {target_index}")
-                target_index += 1
-                continue
-                
-            target_yaw = np.arctan2(diff[1], diff[0])
+            # Use recorded yaw if we are at the target position, 
+            # otherwise point towards the target
+            if dist < DIST_THRESHOLD:
+                target_yaw = target[2]
+            else:
+                target_yaw = np.arctan2(diff[1], diff[0])
+            
             yaw_err = target_yaw - yaw
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
             
-            if abs(yaw_err) > 0.8:
+            # 2. Check Arrival
+            if dist < DIST_THRESHOLD and abs(yaw_err) < YAW_THRESHOLD:
+                print(f">>> ARRIVED at breadcrumb {target_index}")
+                target_index += 1
+                continue
+                
+            # 3. Control Logic
+            # If yaw error is huge, turn on spot first
+            if abs(yaw_err) > 0.5:
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             else:
-                vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
+                # Move towards target if not there yet
+                if dist > DIST_THRESHOLD:
+                    vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
+                else:
+                    vx = 0.0 # Just fine-tune rotation if close enough
+                    
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
             self.loco_client.Move(vx, 0.0, vyaw)
