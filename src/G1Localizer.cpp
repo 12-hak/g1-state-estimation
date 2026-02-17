@@ -265,8 +265,8 @@ void G1Localizer::localizationLoop() {
             // 5. Body Filtering (XY)
             float dist_xy = std::sqrt(p_level.x() * p_level.x() + p_level.y() * p_level.y());
             
-            // 3.0m visualization/performance limit
-            if (dist_xy > 3.5f) continue; 
+            // 15.0m Long Range vision (Requested for large rooms)
+            if (dist_xy > 15.0f) continue; 
 
             // Refined Robot Body Filter:
             // The LiDAR is at x=0.1. Behind (x < 0.1) we filter more broadly.
@@ -280,16 +280,15 @@ void G1Localizer::localizationLoop() {
             // Remove the old aggressive 0.5m filter that was killing curbs
             
             // 6. Adaptive Grid Deduplication (Distance-based resolution)
-            // Close objects (<1m): 2cm grid for high sensitivity
-            // Mid-range (1-2m): 5cm grid
-            // Far objects (>2m): 10cm grid
             float adaptive_grid;
             if (dist_xy < 1.0f) {
-                adaptive_grid = 0.02f;  // 2cm for close obstacles
-            } else if (dist_xy < 2.0f) {
-                adaptive_grid = 0.05f;  // 5cm for mid-range
+                adaptive_grid = 0.02f;  // 2cm Close
+            } else if (dist_xy < 3.0f) {
+                adaptive_grid = 0.05f;  // 5cm Mid
+            } else if (dist_xy < 7.0f) {
+                adaptive_grid = 0.10f;  // 10cm Far
             } else {
-                adaptive_grid = 0.10f;  // 10cm for far objects
+                adaptive_grid = 0.20f;  // 20cm Very Far
             }
             
             int32_t ix = static_cast<int32_t>(std::lround(p_level.x() / adaptive_grid));
@@ -328,7 +327,8 @@ void G1Localizer::localizationLoop() {
 
         // 2. Local Map Pruning (Performance Limit)
         // Reduced to 3.5m to keep the visualizer fast as requested.
-        const float map_radius = 5.0f; 
+        // 20.0m Map Persistence (Requested for large rooms)
+        const float map_radius = 20.0f; 
         const float map_radius_sq = map_radius * map_radius;
         
         if (!global_map_.empty()) {
@@ -519,8 +519,8 @@ void G1Localizer::localizationLoop() {
                     if (yaw_diff > M_PI) yaw_diff -= 2*M_PI;
                     if (yaw_diff < -M_PI) yaw_diff += 2*M_PI;
 
-                    // Smoothly update corrections
-                    float alpha = 0.5f;
+                    // Smoothly update corrections (Snappy alpha for fast relocalization)
+                    float alpha = 0.8f;
                     slam_correction_ = slam_correction_ * (1.0f - alpha) + target_correction * alpha;
                     slam_yaw_correction_ = slam_yaw_correction_ * (1.0f - alpha) + yaw_diff * alpha;
                     
