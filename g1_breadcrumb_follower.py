@@ -205,11 +205,12 @@ class BreadcrumbFollower:
         MAX_VEL = 0.5
         MAX_YAW = 1.0
         
-        # Thresholds
-        DIST_THRESHOLD = 0.15 # 15cm precision
-        YAW_THRESHOLD = 0.1   # ~6 degree precision
+        # Thresholds (Relaxed for reliability)
+        DIST_THRESHOLD = 0.30 
+        YAW_THRESHOLD = 0.25   
         
-        print(">>> Moving to first point...")
+        last_debug = 0
+        print(">>> Starting Playback Thread...")
         
         while self.is_playing and target_index < len(path):
             target = path[target_index]
@@ -227,8 +228,6 @@ class BreadcrumbFollower:
             diff = target[:2] - pos
             dist = np.linalg.norm(diff)
             
-            # Use recorded yaw if we are at the target position, 
-            # otherwise point towards the target
             if dist < DIST_THRESHOLD:
                 target_yaw = target[2]
             else:
@@ -238,23 +237,28 @@ class BreadcrumbFollower:
             while yaw_err > np.pi: yaw_err -= 2*np.pi
             while yaw_err < -np.pi: yaw_err += 2*np.pi
             
+            # Rate-limited debug
+            if time.time() - last_debug > 2.0:
+                print(f"[DEBUG] Target {target_index}: dist={dist:.2f}m, yaw_err={yaw_err:.2f}rad")
+                last_debug = time.time()
+
             # 2. Check Arrival
             if dist < DIST_THRESHOLD and abs(yaw_err) < YAW_THRESHOLD:
-                print(f">>> ARRIVED at breadcrumb {target_index}")
+                print(f">>> REACHED breadcrumb {target_index}")
                 target_index += 1
                 continue
                 
             # 3. Control Logic
-            # If yaw error is huge, turn on spot first
-            if abs(yaw_err) > 0.5:
+            if abs(yaw_err) > 0.6: # Large heading error: Rotate only
                 vx = 0.0
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             else:
-                # Move towards target if not there yet
+                # Move towards target
                 if dist > DIST_THRESHOLD:
-                    vx = np.clip(K_LINEAR * dist, 0.2, MAX_VEL)
+                    # Slow down as we get closer (min 0.1 for traction)
+                    vx = np.clip(K_LINEAR * dist, 0.1, MAX_VEL)
                 else:
-                    vx = 0.0 # Just fine-tune rotation if close enough
+                    vx = 0.0 # Orientation fine-tuning
                     
                 vyaw = np.clip(K_ANGULAR * yaw_err, -MAX_YAW, MAX_YAW)
             
