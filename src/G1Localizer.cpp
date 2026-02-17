@@ -326,32 +326,6 @@ void G1Localizer::localizationLoop() {
         }
 
         // 5. LIVE BROADCASTS (Moved BEFORE ICP so it always runs, even when stationary)
-        // ... (lines 328-450 skipped) ...
-                    
-                    // 2. Yaw Correction (New!)
-                    float icp_yaw = std::atan2(result.rotation(1,0), result.rotation(0,0));
-                    float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
-                                             1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
-
-        // ... (lines 485-492 skipped) ...
-
-        // 4. MAP UPDATE STEP (Performed AFTER ICP Correction)
-        // Get latest corrected position and yaw
-        Eigen::Vector3f corrected_pos;
-        float corrected_yaw;
-        bool icp_ok = false;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            corrected_pos = state_.position;
-            icp_ok = state_.icp_valid;
-            float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
-                                     1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
-            corrected_yaw = raw_yaw + slam_yaw_correction_;
-        }
-            corrected_yaw_broadcast = raw_yaw + slam_yaw_correction_;
-        }
-
-        // 5. LIVE BROADCASTS (Moved BEFORE ICP so it always runs, even when stationary)
         //
         // Always publish an accumulated "360" snapshot (deduped) at ~2Hz.
         // Accumulates points over 2.5s window and publishes complete scans.
@@ -496,8 +470,8 @@ void G1Localizer::localizationLoop() {
                     
                     // 2. Yaw Correction (New!)
                     float icp_yaw = std::atan2(result.rotation(1,0), result.rotation(0,0));
-                    float raw_yaw = std::atan2(2.0f*(q.w()*q.z() + q.x()*q.y()), 
-                                             1.0f - 2.0f*(q.y()*q.y() + q.z()*q.z()));
+                    float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                             1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
                     float yaw_diff = icp_yaw - raw_yaw;
                     // Normalize angle
                     if (yaw_diff > M_PI) yaw_diff -= 2*M_PI;
@@ -529,8 +503,8 @@ void G1Localizer::localizationLoop() {
             std::lock_guard<std::mutex> lock(state_mutex_);
             corrected_pos = state_.position;
             icp_ok = state_.icp_valid;
-            float raw_yaw = std::atan2(2.0f*(q.w()*q.z() + q.x()*q.y()), 
-                                     1.0f - 2.0f*(q.y()*q.y() + q.z()*q.z()));
+            float raw_yaw = std::atan2(2.0f*(q_raw.w()*q_raw.z() + q_raw.x()*q_raw.y()), 
+                                     1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
             corrected_yaw = raw_yaw + slam_yaw_correction_;
         }
 
@@ -599,7 +573,7 @@ void G1Localizer::localizationLoop() {
         // Broadcast pose for recorder and viz
         auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        udp_publisher_->sendPose(timestamp_us, corrected_pos, q);
+        udp_publisher_->sendPose(timestamp_us, corrected_pos, q_raw);
 
         // Precise sleep to maintain 50Hz
         std::this_thread::sleep_until(next_tick);
