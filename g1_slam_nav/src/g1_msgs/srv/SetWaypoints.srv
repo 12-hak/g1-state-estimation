@@ -1,0 +1,7 @@
+# Request
+geometry_msgs/PoseStamped[] waypoints
+bool loop
+---
+# Response
+bool success
+string message

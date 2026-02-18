@@ -1,0 +1,31 @@
+slam_node:
+  ros__parameters:
+    voxel_size: 0.5
+    max_range: 15.0
+    min_range: 0.3
+    max_icp_iterations: 50
+    odom_frame: "odom"
+    base_frame: "base_link"
+    map_frame: "map"
+    map_publish_rate: 1.0
+    keyframe_distance: 1.0
+    keyframe_angle: 0.5
+    loop_search_radius: 15.0
+    enable_loop_closure: true
+
+occupancy_grid_node:
+  ros__parameters:
+    resolution: 0.05
+    width: 200.0
+    height: 200.0
+    min_obstacle_height: 0.15
+    max_obstacle_height: 2.0
+    map_frame: "map"
+    publish_rate: 1.0
+    free_threshold: 0.3
+    occupied_threshold: 0.65
+
+map_manager_node:
+  ros__parameters:
+    map_directory: "/home/unitree/maps"
+    map_frame: "map"

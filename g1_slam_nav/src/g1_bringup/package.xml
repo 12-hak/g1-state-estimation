@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>g1_bringup</name>
+  <version>1.0.0</version>
+  <description>Master launch files and configuration for G1/Go2 SLAM and navigation system</description>
+  <maintainer email="dev@unitree.local">G1 Dev</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>g1_msgs</exec_depend>
+  <exec_depend>g1_sensor_bridge</exec_depend>
+  <exec_depend>g1_slam</exec_depend>
+  <exec_depend>g1_navigation</exec_depend>
+  <exec_depend>g1_web_interface</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

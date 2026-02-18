@@ -1,0 +1,7 @@
+# Request
+string filename
+---
+# Response
+bool success
+string message
+string filepath

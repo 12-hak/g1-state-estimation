@@ -1,0 +1,32 @@
+livox_bridge:
+  ros__parameters:
+    frame_id: "lidar_link"
+    lidar_config_path: ""
+    body_filter_radius: 0.3
+    max_range: 15.0
+    min_range: 0.15
+    flip_lidar: true
+    lidar_offset_x: 0.10
+    lidar_offset_y: 0.0
+    lidar_offset_z: 0.60
+    publish_rate: 10.0
+
+unitree_bridge:
+  ros__parameters:
+    network_interface: "eth0"
+    robot_type: "g1"
+    publish_rate: 50.0
+
+leg_odometry:
+  ros__parameters:
+    robot_type: "g1"
+    step_scale: 0.6
+    lateral_scale: 0.4
+    velocity_deadband: 0.10
+    stationary_joint_threshold: 0.2
+    stationary_gyro_threshold: 0.02
+    yaw_complementary_alpha: 0.05
+    odom_frame: "odom"
+    base_frame: "base_link"
+    publish_tf: false
+    publish_rate: 50.0

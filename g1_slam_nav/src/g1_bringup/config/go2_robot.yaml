@@ -1,0 +1,44 @@
+# Go2 Robot Configuration
+robot:
+  type: "go2"
+  num_joints: 12
+  base_height: 0.3
+  robot_radius: 0.20
+  max_linear_velocity: 1.0
+  max_angular_velocity: 1.5
+
+lidar:
+  type: "livox_mid360"
+  flip: false
+  offset:
+    x: 0.0
+    y: 0.0
+    z: 0.25
+  max_range: 15.0
+  min_range: 0.15
+  body_filter_radius: 0.25
+
+network:
+  interface: "eth0"
+  robot_ip: "192.168.123.161"
+  pc_ip: "192.168.123.100"
+
+slam:
+  voxel_size: 0.5
+  max_range: 15.0
+  min_range: 0.3
+  enable_loop_closure: true
+  keyframe_distance: 0.5
+  map_directory: "/home/unitree/maps"
+
+navigation:
+  max_vel_x: 0.8
+  max_vel_y: 0.4
+  max_vel_theta: 1.0
+  acc_lim_x: 0.5
+  acc_lim_y: 0.3
+  inflation_radius: 0.40
+
+web:
+  ws_port: 9090
+  http_port: 8080
