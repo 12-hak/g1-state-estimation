@@ -104,8 +104,8 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
 
         // CLONE MISSING PIECE: The Prior (Kalman Filter behavior)
         // DIAGNOSTIC: Re-enabled.
-        float pos_stiffness = 1.0f; 
-        float rot_stiffness = 1.0f; // Minimal penalty to trust Lidar geometry for distance/yaw
+        float pos_stiffness = 30.0f; 
+        float rot_stiffness = 30.0f; // Tighted slightly to resist pure gyro drift
         
         Eigen::Matrix3f Prior_H = Eigen::Matrix3f::Identity();
         Prior_H(0,0) = pos_stiffness;

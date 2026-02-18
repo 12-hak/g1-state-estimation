@@ -233,8 +233,14 @@ void G1Localizer::localizationLoop() {
             lidar_fused_init = true;
         } else {
             // Integrate LiDAR's internal gyro (Yaw rate)
-            // lidar_imu axes: Z is up.
-            lidar_fused_yaw += lidar_imu.gyro[2] * 0.01f; // 10ms loop
+            // DIAGNOSTIC: Printing Gyro Z to check for frame mismatch
+            static int log_counter = 0;
+            if (++log_counter % 10 == 0) {
+                 std::cout << "[G1Localizer] LidarGyro Z: " << lidar_imu.gyro[2] << " | RobotYaw: " << imu_yaw << std::endl;
+            }
+
+            // DIAGNOSTIC: Inverting Z-axis (common issue with upside-down/rotated mounts)
+            lidar_fused_yaw += -lidar_imu.gyro[2] * 0.01f; // 10ms loop
             
             // Normalize
             while(lidar_fused_yaw > M_PI) lidar_fused_yaw -= 2*M_PI;
