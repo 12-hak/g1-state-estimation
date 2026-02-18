@@ -11,6 +11,12 @@
 
 namespace g1_localization {
 
+    struct LidarImu {
+        float gyro[3]; // rad/s
+        float accel[3]; // g
+        uint64_t timestamp;
+    };
+
 class LivoxInterface {
 public:
     LivoxInterface();
@@ -19,11 +25,6 @@ public:
     void initialize();
     void uninitialize();
     
-    struct LidarImu {
-        float gyro[3]; // rad/s
-        float accel[3]; // g
-        uint64_t timestamp;
-    };
 
     std::vector<Eigen::Vector3f> getLatestPointCloud();
     LidarImu getLatestImu();

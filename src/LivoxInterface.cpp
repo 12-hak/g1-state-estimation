@@ -37,7 +37,7 @@ void LivoxInterface::initialize() {
     
     SetLivoxLidarInfoChangeCallback(LidarInfoChangeCallback, this);
     SetLivoxLidarPointCloudCallBack(PointCloudCallback, this);
-    SetLivoxLidarImuDataCallBack(ImuDataCallback, this);
+    SetLivoxLidarImuDataCallback(ImuDataCallback, this);
     
     running_ = true;
     std::cout << "[LivoxInterface] SDK Initialized." << std::endl;
@@ -57,7 +57,7 @@ std::vector<Eigen::Vector3f> LivoxInterface::getLatestPointCloud() {
     return points;
 }
 
-LivoxInterface::LidarImu LivoxInterface::getLatestImu() {
+LidarImu LivoxInterface::getLatestImu() {
     std::lock_guard<std::mutex> lock(imu_mutex_);
     return latest_imu_;
 }
