@@ -212,10 +212,12 @@ void G1Localizer::localizationLoop() {
         // 1. Get State Snapshot (Thread Safe)
         Eigen::Quaternionf q_raw;
         Eigen::Vector3f base_pos;
+        float slam_yaw_corr_snap;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             q_raw = state_.orientation;
             base_pos = state_.position;
+            slam_yaw_corr_snap = slam_yaw_correction_;
         }
 
         // 1.5 LiDAR-LOCKED HEADING (Ultra-Stability)
@@ -229,28 +231,23 @@ void G1Localizer::localizationLoop() {
                                  1.0f - 2.0f*(q_raw.y()*q_raw.y() + q_raw.z()*q_raw.z()));
                                  
         if (!lidar_fused_init) {
-            lidar_fused_yaw = imu_yaw;
+            lidar_fused_yaw = imu_yaw + slam_yaw_corr_snap;
             lidar_fused_init = true;
         } else {
             // Integrate LiDAR's internal gyro (Yaw rate)
-            // DIAGNOSTIC: Printing Gyro Z to check for frame mismatch
-            static int log_counter = 0;
-            if (++log_counter % 10 == 0) {
-                 std::cout << "[G1Localizer] LidarGyro Z: " << lidar_imu.gyro[2] << " | RobotYaw: " << imu_yaw << std::endl;
-            }
-
-            // DIAGNOSTIC: Inverting Z-axis (common issue with upside-down/rotated mounts)
-            lidar_fused_yaw += -lidar_imu.gyro[2] * 0.01f; // 10ms loop
+            // lidar_imu axes: Z is typically "up" in Mid-360 local frame.
+            lidar_fused_yaw += lidar_imu.gyro[2] * 0.01f; // 10ms loop
             
             // Normalize
             while(lidar_fused_yaw > M_PI) lidar_fused_yaw -= 2*M_PI;
             while(lidar_fused_yaw < -M_PI) lidar_fused_yaw += 2*M_PI;
             
-            // Slow sync with main orientation to prevent gyro walk
-            float diff = imu_yaw - lidar_fused_yaw;
+            // Sync to SLAM-Corrected reference (Compass + Map Offset)
+            float target_yaw = imu_yaw + slam_yaw_corr_snap;
+            float diff = target_yaw - lidar_fused_yaw;
             if (diff > M_PI) diff -= 2*M_PI;
             if (diff < -M_PI) diff += 2*M_PI;
-            lidar_fused_yaw += 0.1f * diff; // 10Hz sync rate
+            lidar_fused_yaw += 0.05f * diff; // Smooth drift correction
         }
 
         // Update q_raw with the stable LiDAR-locked heading
