@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>G1 Localization Viz</title>
+    <style>
+        body { margin: 0; background: #222; color: #eee; font-family: monospace; }
+        canvas { display: block; margin: 0 auto; background: #333; }
+        #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; }
+    </style>
+</head>
+<body>
+    <div id="status">
+        <h2>G1 Localization</h2>
+        <div>Status: <span id="conn">Disconnected</span></div>
+        <div>ICP Valid: <span id="icp_valid">-</span></div>
+        <div>ICP Error: <span id="icp_error">-</span> m</div>
+        <div>Pos: <span id="pos">0, 0, 0</span></div>
+        <div>Correction: <span id="correction">0, 0</span></div>
+    </div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusEl = document.getElementById('conn');
+        
+        // State
+        let socket = null;
+        let lastData = null;
+        let mapPoints = [];
+        
+        // View settings
+        let scale = 50; // pixels per meter
+        let offsetX = 400;
+        let offsetY = 300;
+        
+        function connect() {
+            socket = new WebSocket('ws://' + window.location.hostname + ':8765');
+            
+            socket.onopen = () => {
+                statusEl.textContent = 'Connected';
+                statusEl.style.color = '#0f0';
+            };
+            
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                lastData = data;
+                
+                // Update specific DOM elements
+                document.getElementById('icp_valid').textContent = data.icp_valid;
+                document.getElementById('icp_valid').style.color = data.icp_valid ? '#0f0' : '#f00';
+                document.getElementById('icp_error').textContent = data.icp_error.toFixed(3);
+                
+                const px = data.pos[0].toFixed(2);
+                const py = data.pos[1].toFixed(2);
+                const pz = data.yaw.toFixed(2);
+                document.getElementById('pos').textContent = `${px}, ${py}, ${pz} rad`;
+                
+                const dx = (data.pos[0] - data.raw_pos[0]).toFixed(3);
+                const dy = (data.pos[1] - data.raw_pos[1]).toFixed(3);
+                document.getElementById('correction').textContent = `dx=${dx}, dy=${dy}`;
+                
+                // Update map logic (1Hz)
+                if (data.map) {
+                    mapPoints = data.map;
+                }
+                
+                draw();
+            };
+            
+            socket.onclose = () => {
+                statusEl.textContent = 'Disconnected (Retrying...)';
+                statusEl.style.color = '#f00';
+                setTimeout(connect, 1000);
+            };
+        }
+        
+        // Mouse controls for pan/zoom
+        let isDragging = false;
+        let lastX, lastY;
+        
+        canvas.addEventListener('mousedown', e => { isDragging = true; lastX = e.clientX; lastY = e.clientY; });
+        canvas.addEventListener('mousemove', e => {
+            if (isDragging) {
+                offsetX += e.clientX - lastX;
+                offsetY += e.clientY - lastY;
+                lastX = e.clientX;
+                lastY = e.clientY;
+                if (!socket || socket.readyState !== 1) draw();
+            }
+        });
+        canvas.addEventListener('mouseup', () => isDragging = false);
+        canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+            const zoom = e.deltaY > 0 ? 0.9 : 1.1;
+            scale *= zoom;
+            if (!socket || socket.readyState !== 1) draw();
+        });
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            draw();
+        }
+        window.addEventListener('resize', resize);
+        resize();
+        
+        function toScreen(x, y) {
+            // Robot coordinates: X forward (Up), Y left (Left)
+            // Screen: X right, Y down
+            // Transform: Robot X -> Screen -Y, Robot Y -> Screen -X
+            
+            // Standard map view: X horizontal, Y vertical?
+            // Let's stick to standard 2D Cartesian: X right, Y up (screen Y inverted)
+            return {
+                x: offsetX + x * scale,
+                y: offsetY - y * scale
+            };
+        }
+        
+        function drawPoint(x, y, color, size=2) {
+            const p = toScreen(x, y);
+            ctx.fillStyle = color;
+            ctx.fillRect(p.x - size/2, p.y - size/2, size, size);
+        }
+
+        function drawRobot(x, y, yaw, color, isGhost=false) {
+            const p = toScreen(x, y);
+            
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            // Canvas rotation is clockwise, yaw is counter-clockwise
+            ctx.rotate(-yaw); 
+            
+            // Draw Body
+            ctx.strokeStyle = color;
+            ctx.lineWidth = isGhost ? 1 : 2;
+            if (isGhost) ctx.setLineDash([5, 5]);
+            
+            // Rectangle
+            ctx.strokeRect(-10, -15, 20, 30); // 20cm x 30cm-ish scale
+            
+            // Heading indicator
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(20, 0); // Forward line (Wait, X is forward!)
+            // Currently drew a box. Let's draw an arrow.
+            
+            // If X is forward (0 rad), and we rotate by -yaw.
+            // On screen, forward is 0 deg (Right).
+            // So default arrow points right.
+            ctx.moveTo(0, 0);
+            ctx.lineTo(25, 0);
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+        function draw() {
+            // Clear
+            ctx.fillStyle = '#222';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Grid
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            // ... (simple crosshair at 0,0)
+            const center = toScreen(0,0);
+            ctx.moveTo(center.x - 1000, center.y);
+            ctx.lineTo(center.x + 1000, center.y);
+            ctx.moveTo(center.x, center.y - 1000);
+            ctx.lineTo(center.x, center.y + 1000);
+            ctx.stroke();
+
+            // Draw Global Map (Gray)
+            ctx.fillStyle = '#666';
+            for (const pt of mapPoints) {
+                // pt is [x, y]
+                drawPoint(pt[0], pt[1], '#555', 2);
+            }
+            
+            if (lastData) {
+                // Draw Scan (Red for obstacles)
+                for (const pt of lastData.scan) {
+                    // Scan points are in Robot Frame? 
+                    // No, `latest_scan_2d_` in G1Localizer seems to be in BASE frame?
+                    // Let's check update loop.
+                    // Lines 262-265: `latest_scan_2d_ = base_frame_scan`.
+                    // So they are relative to the robot.
+                    // We need to transform them to World Frame to show on map.
+                    
+                    // Transform:
+                    const c = Math.cos(lastData.yaw);
+                    const s = Math.sin(lastData.yaw);
+                    const wx = pt[0] * c - pt[1] * s + lastData.pos[0];
+                    const wy = pt[0] * s + pt[1] * c + lastData.pos[1];
+                    
+                    drawPoint(wx, wy, '#f55', 3);
+                }
+                
+                // Draw Raw Pos (Ghost - Purple)
+                // This shows where odometry thinks we are
+                drawRobot(lastData.raw_pos[0], lastData.raw_pos[1], lastData.yaw, '#aa55ff', true); // Yaw might be different too, but using same yaw for simplicity
+                
+                // Draw Corrected Pos (Solid - Green)
+                drawRobot(lastData.pos[0], lastData.pos[1], lastData.yaw, '#00ff00', false);
+            }
+        }
+        
+        connect();
+        
+    </script>
+</body>
+</html>

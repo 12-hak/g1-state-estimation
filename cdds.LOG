@@ -1,0 +1,115 @@
+1768820298.904337 [1]      40708: config: Domain/General/MulticastRecvNetworkInterfaceAddresses/#text: preferred {}
+1768820298.904410 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@autodetermine]: false {}
+1768820298.904504 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@name]: lo {0}
+1768820298.904527 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@address]:  {}
+1768820298.904543 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@priority]: default {0}
+1768820298.904558 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@prefer_multicast]: false {}
+1768820298.904589 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@presence_required]: true {}
+1768820298.905918 [1]      40708: config: Domain/General/Interfaces/NetworkInterface[@multicast]: default {0}
+1768820298.906149 [1]      40708: config: Domain/General/ExternalNetworkAddress/#text: auto {}
+1768820298.906264 [1]      40708: config: Domain/General/ExternalNetworkMask/#text: 0.0.0.0 {}
+1768820298.906294 [1]      40708: config: Domain/General/AllowMulticast/#text: default {}
+1768820298.906314 [1]      40708: config: Domain/General/MulticastTimeToLive/#text: 32 {}
+1768820298.906333 [1]      40708: config: Domain/General/DontRoute/#text: false {}
+1768820298.906353 [1]      40708: config: Domain/General/Transport/#text: udp {}
+1768820298.906372 [1]      40708: config: Domain/General/EnableMulticastLoopback/#text: true {}
+1768820298.906399 [1]      40708: config: Domain/General/MaxMessageSize/#text: 14720 B {}
+1768820298.906419 [1]      40708: config: Domain/General/MaxRexmitMessageSize/#text: 1456 B {}
+1768820298.906439 [1]      40708: config: Domain/General/FragmentSize/#text: 1344 B {}
+1768820298.906457 [1]      40708: config: Domain/General/RedundantNetworking/#text: false {}
+1768820298.906477 [1]      40708: config: Domain/General/EntityAutoNaming/#text: empty {}
+1768820298.906505 [1]      40708: config: Domain/General/EntityAutoNaming[@seed]: 2292133561 38908580 4226671960 1436352317 1405123164 3685761121 217905701 2259984021 {}
+1768820298.906537 [1]      40708: config: Domain/Sizing/ReceiveBufferSize/#text: 1 MiB {}
+1768820298.906561 [1]      40708: config: Domain/Sizing/ReceiveBufferChunkSize/#text: 128 KiB {}
+1768820298.906587 [1]      40708: config: Domain/Compatibility/StandardsConformance/#text: lax {}
+1768820298.906613 [1]      40708: config: Domain/Compatibility/ExplicitlyPublishQosSetToDefault/#text: false {}
+1768820298.906635 [1]      40708: config: Domain/Compatibility/ManySocketsMode/#text: single {}
+1768820298.906655 [1]      40708: config: Domain/Compatibility/AssumeRtiHasPmdEndpoints/#text: false {}
+1768820298.906675 [1]      40708: config: Domain/Discovery/Tag/#text:  {}
+1768820298.906694 [1]      40708: config: Domain/Discovery/ExternalDomainId/#text: 1 {}
+1768820298.906713 [1]      40708: config: Domain/Discovery/DSGracePeriod/#text: 30 s {}
+1768820298.906734 [1]      40708: config: Domain/Discovery/ParticipantIndex/#text: none {}
+1768820298.906752 [1]      40708: config: Domain/Discovery/MaxAutoParticipantIndex/#text: 9 {}
+1768820298.906772 [1]      40708: config: Domain/Discovery/SPDPMulticastAddress/#text: 239.255.0.1 {}
+1768820298.906791 [1]      40708: config: Domain/Discovery/SPDPInterval/#text: 30 s {}
+1768820298.906809 [1]      40708: config: Domain/Discovery/DefaultMulticastAddress/#text: auto {}
+1768820298.906829 [1]      40708: config: Domain/Discovery/Ports/Base/#text: 7400 {}
+1768820298.906847 [1]      40708: config: Domain/Discovery/Ports/DomainGain/#text: 250 {}
+1768820298.906866 [1]      40708: config: Domain/Discovery/Ports/ParticipantGain/#text: 2 {}
+1768820298.906885 [1]      40708: config: Domain/Discovery/Ports/MulticastMetaOffset/#text: 0 {}
+1768820298.906905 [1]      40708: config: Domain/Discovery/Ports/UnicastMetaOffset/#text: 10 {}
+1768820298.906923 [1]      40708: config: Domain/Discovery/Ports/MulticastDataOffset/#text: 1 {}
+1768820298.906944 [1]      40708: config: Domain/Discovery/Ports/UnicastDataOffset/#text: 11 {}
+1768820298.907038 [1]      40708: config: Domain/Discovery/EnableTopicDiscoveryEndpoints/#text: false {}
+1768820298.907062 [1]      40708: config: Domain/Discovery/LeaseDuration/#text: 10 s {}
+1768820298.907099 [1]      40708: config: Domain/Tracing/Category/#text: fatal,error,warning,info,config {0}
+1768820298.907121 [1]      40708: config: Domain/Tracing/OutputFile/#text: cdds.LOG {0}
+1768820298.907139 [1]      40708: config: Domain/Tracing/AppendToFile/#text: false {}
+1768820298.907157 [1]      40708: config: Domain/Tracing/PacketCaptureFile/#text:  {}
+1768820298.907176 [1]      40708: config: Domain/Internal/DeliveryQueueMaxSamples/#text: 256 {}
+1768820298.907194 [1]      40708: config: Domain/Internal/PrimaryReorderMaxSamples/#text: 128 {}
+1768820298.907212 [1]      40708: config: Domain/Internal/SecondaryReorderMaxSamples/#text: 128 {}
+1768820298.907230 [1]      40708: config: Domain/Internal/DefragUnreliableMaxSamples/#text: 4 {}
+1768820298.907248 [1]      40708: config: Domain/Internal/DefragReliableMaxSamples/#text: 16 {}
+1768820298.907266 [1]      40708: config: Domain/Internal/BuiltinEndpointSet/#text: writers {}
+1768820298.907284 [1]      40708: config: Domain/Internal/MeasureHbToAckLatency/#text: false {}
+1768820298.907303 [1]      40708: config: Domain/Internal/UnicastResponseToSPDPMessages/#text: true {}
+1768820298.907322 [1]      40708: config: Domain/Internal/SynchronousDeliveryPriorityThreshold/#text: 0 {}
+1768820298.907341 [1]      40708: config: Domain/Internal/SynchronousDeliveryLatencyBound/#text: inf {}
+1768820298.907359 [1]      40708: config: Domain/Internal/MaxParticipants/#text: 0 {}
+1768820298.907377 [1]      40708: config: Domain/Internal/AccelerateRexmitBlockSize/#text: 0 {}
+1768820298.907396 [1]      40708: config: Domain/Internal/RetransmitMerging/#text: never {}
+1768820298.907414 [1]      40708: config: Domain/Internal/RetransmitMergingPeriod/#text: 5 ms {}
+1768820298.907433 [1]      40708: config: Domain/Internal/HeartbeatInterval/#text: 100 ms {}
+1768820298.907452 [1]      40708: config: Domain/Internal/HeartbeatInterval[@min]: 5 ms {}
+1768820298.907470 [1]      40708: config: Domain/Internal/HeartbeatInterval[@minsched]: 20 ms {}
+1768820298.907489 [1]      40708: config: Domain/Internal/HeartbeatInterval[@max]: 8 s {}
+1768820298.907509 [1]      40708: config: Domain/Internal/MaxQueuedRexmitBytes/#text: 512 KiB {}
+1768820298.907528 [1]      40708: config: Domain/Internal/MaxQueuedRexmitMessages/#text: 200 {}
+1768820298.907545 [1]      40708: config: Domain/Internal/WriterLingerDuration/#text: 1 s {}
+1768820298.907565 [1]      40708: config: Domain/Internal/SocketReceiveBufferSize[@min]: default {}
+1768820298.907585 [1]      40708: config: Domain/Internal/SocketReceiveBufferSize[@max]: default {}
+1768820298.907605 [1]      40708: config: Domain/Internal/SocketSendBufferSize[@min]: 64 KiB {}
+1768820298.907624 [1]      40708: config: Domain/Internal/SocketSendBufferSize[@max]: default {}
+1768820298.907681 [1]      40708: config: Domain/Internal/NackDelay/#text: 100 ms {}
+1768820298.907745 [1]      40708: config: Domain/Internal/AckDelay/#text: 10 ms {}
+1768820298.907765 [1]      40708: config: Domain/Internal/AutoReschedNackDelay/#text: 3 s {}
+1768820298.907784 [1]      40708: config: Domain/Internal/PreEmptiveAckDelay/#text: 10 ms {}
+1768820298.907803 [1]      40708: config: Domain/Internal/ScheduleTimeRounding/#text: 0 s {}
+1768820298.907821 [1]      40708: config: Domain/Internal/DDSI2DirectMaxThreads/#text: 1 {}
+1768820298.907840 [1]      40708: config: Domain/Internal/SquashParticipants/#text: false {}
+1768820298.907858 [1]      40708: config: Domain/Internal/SPDPResponseMaxDelay/#text: 0 s {}
+1768820298.907877 [1]      40708: config: Domain/Internal/LateAckMode/#text: false {}
+1768820298.907896 [1]      40708: config: Domain/Internal/RetryOnRejectBestEffort/#text: false {}
+1768820298.907915 [1]      40708: config: Domain/Internal/GenerateKeyhash/#text: false {}
+1768820298.907934 [1]      40708: config: Domain/Internal/MaxSampleSize/#text: 2147483647 B {}
+1768820298.907998 [1]      40708: config: Domain/Internal/LivelinessMonitoring/#text: false {}
+1768820298.908021 [1]      40708: config: Domain/Internal/LivelinessMonitoring[@StackTraces]: true {}
+1768820298.908041 [1]      40708: config: Domain/Internal/LivelinessMonitoring[@Interval]: 1 s {}
+1768820298.908060 [1]      40708: config: Domain/Internal/MonitorPort/#text: -1 {}
+1768820298.908078 [1]      40708: config: Domain/Internal/PrioritizeRetransmit/#text: true {}
+1768820298.908097 [1]      40708: config: Domain/Internal/UseMulticastIfMreqn/#text: 0 {}
+1768820298.908115 [1]      40708: config: Domain/Internal/RediscoveryBlacklistDuration/#text: 0 s {}
+1768820298.908135 [1]      40708: config: Domain/Internal/RediscoveryBlacklistDuration[@enforce]: false {}
+1768820298.908153 [1]      40708: config: Domain/Internal/MultipleReceiveThreads/#text: default {}
+1768820298.908171 [1]      40708: config: Domain/Internal/MultipleReceiveThreads[@maxretries]: 4294967295 {}
+1768820298.908191 [1]      40708: config: Domain/Internal/Test/XmitLossiness/#text: 0 {}
+1768820298.908211 [1]      40708: config: Domain/Internal/Watermarks/WhcLow/#text: 1 KiB {}
+1768820298.908231 [1]      40708: config: Domain/Internal/Watermarks/WhcHigh/#text: 500 KiB {}
+1768820298.908251 [1]      40708: config: Domain/Internal/Watermarks/WhcHighInit/#text: 30 KiB {}
+1768820298.908270 [1]      40708: config: Domain/Internal/Watermarks/WhcAdaptive/#text: true {}
+1768820298.908290 [1]      40708: config: Domain/Internal/BurstSize/MaxRexmit/#text: 1 MiB {}
+1768820298.908309 [1]      40708: config: Domain/Internal/BurstSize/MaxInitTransmit/#text: 4294967295 {}
+1768820298.908335 [1]      40708: config: Domain/Internal/EnableExpensiveChecks/#text:  {}
+1768820298.908355 [1]      40708: config: Domain/TCP/NoDelay/#text: true {}
+1768820298.908374 [1]      40708: config: Domain/TCP/Port/#text: -1 {}
+1768820298.908394 [1]      40708: config: Domain/TCP/ReadTimeout/#text: 2 s {}
+1768820298.908414 [1]      40708: config: Domain/TCP/WriteTimeout/#text: 2 s {}
+1768820298.908433 [1]      40708: config: Domain/TCP/AlwaysUsePeeraddrForUnicast/#text: false {}
+1768820298.908453 [1]      40708: config: Domain[@Id]: 1 {0}
+1768820298.908777 [1]      40708: started at 1768820298.06908496 -- 2026-01-19 20:58:18+10:00
+1768820298.908804 [1]      40708: udp initialized
+1768820298.948987 [1]      40708: interfaces: Local Area Connection* 1 (interface down) Local Area Connection* 2 (interface down) Ethernet 3 (interface down) Ethernet 4 wired udp/192.168.36.1(q9) Ethernet 7 wired udp/192.168.217.1(q9) Wi-Fi wireless udp/192.168.1.169(q9) Bluetooth Network Connection (interface down) Loopback Pseudo-Interface 1 udp/127.0.0.1(q1) vEthernet (Default Switch) wired udp/172.28.48.1(q9)
+1768820298.949069 [1]      40708: lo: does not match an available interface.
+1768820298.949499 [1]      40708: No network interface selected
+1768820298.949521 [1]      40708: udp finalized

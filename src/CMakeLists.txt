@@ -45,6 +45,8 @@ include_directories(
 # Source files
 set(SOURCES
     ICP2D.cpp
+    ScanMatcher.cpp
+    PoseGraph.cpp
     LivoxInterface.cpp
     UDPPublisher.cpp
     G1Localizer.cpp
@@ -72,6 +74,8 @@ install(TARGETS g1_localization_node g1_localization_lib
 
 install(FILES
     ICP2D.hpp
+    ScanMatcher.hpp
+    PoseGraph.hpp
     G1Localizer.hpp
     LivoxInterface.hpp
     UDPPublisher.hpp

@@ -55,6 +55,7 @@ include_directories(
 set(SOURCES
     src/ICP2D.cpp
     src/ScanMatcher.cpp
+    src/PoseGraph.cpp
     src/LivoxInterface.cpp
     src/UDPPublisher.cpp
     src/G1Localizer.cpp
@@ -70,9 +71,16 @@ target_link_libraries(g1_localization_lib
     livox_lidar_sdk_shared
 )
 
+
 # Executable
 add_executable(g1_localization_node src/g1_localization_node.cpp)
 target_link_libraries(g1_localization_node
+    g1_localization_lib
+)
+
+# Web Viz Node
+add_executable(g1_web_viz_node src/g1_web_viz_node.cpp)
+target_link_libraries(g1_web_viz_node
     g1_localization_lib
 )
 
@@ -102,6 +110,7 @@ install(TARGETS g1_localization_node g1_localization_lib
 install(FILES
     src/ICP2D.hpp
     src/ScanMatcher.hpp
+    src/PoseGraph.hpp
     src/G1Localizer.hpp
     src/LivoxInterface.hpp
     src/UDPPublisher.hpp

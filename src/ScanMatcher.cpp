@@ -4,7 +4,7 @@
 
 namespace g1_localization {
 
-ScanMatcher::ScanMatcher() : max_iterations_(30), tolerance_(1e-4), outlier_dist_sq_(1.0f) {}
+ScanMatcher::ScanMatcher() : max_iterations_(30), tolerance_(1e-4), outlier_dist_sq_(12.25f) {}  // 12.25 = 3.5m radius for wall matches
 
 std::vector<LidarPoint> ScanMatcher::computeStructure(const std::vector<Eigen::Vector2f>& points) {
     std::vector<LidarPoint> structured;
@@ -102,15 +102,14 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
             }
         }
 
-        // CLONE MISSING PIECE: The Prior (Kalman Filter behavior)
-        // DIAGNOSTIC: Re-enabled.
-        float pos_stiffness = 30.0f; 
-        float rot_stiffness = 30.0f; // Tighted slightly to resist pure gyro drift
+        // Prior: trust odometry more so we don't over-correct and cause yaw/position jump
+        float pos_stiffness = 70.0f;
+        float rot_stiffness = 70.0f;
         
         Eigen::Matrix3f Prior_H = Eigen::Matrix3f::Identity();
         Prior_H(0,0) = pos_stiffness;
         Prior_H(1,1) = pos_stiffness;
-        Prior_H(2,2) = rot_stiffness; // Trust IMU orientation heavily
+        Prior_H(2,2) = rot_stiffness;
         
         // Error from prediction (Current T - Initial T)
         Eigen::Vector3f dt_vec;
@@ -140,12 +139,17 @@ ScanMatcher::Result ScanMatcher::align(const std::vector<Eigen::Vector2f>& sourc
         theta += delta(2);
     }
     
-    // Final convergence check: If we have good matches and low error, accept it
+    // Final convergence check: need enough matches so alignment is reliable (reduces spinning when few walls in view)
     if (matches >= 20 && avg_error < 0.25f) {
         converged = true;
     }
     
-    return {Eigen::Rotation2D<float>(theta).toRotationMatrix(), t, avg_error, converged};
+    Result res;
+    res.rotation = Eigen::Rotation2D<float>(theta).toRotationMatrix();
+    res.translation = t;
+    res.error = avg_error;
+    res.converged = converged;
+    return res;
 }
 
 } // namespace g1_localization
