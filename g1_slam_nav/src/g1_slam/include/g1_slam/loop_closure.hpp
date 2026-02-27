@@ -37,7 +37,8 @@ public:
         double descriptor_max_range = 15.0;     // Max range for scan context
     };
 
-    explicit LoopClosureDetector(const Config& config = Config());
+    LoopClosureDetector();
+    explicit LoopClosureDetector(const Config& config);
 
     bool addKeyframe(const Eigen::Matrix4d& pose,
                      const std::vector<Eigen::Vector3d>& scan,

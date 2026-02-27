@@ -30,7 +30,7 @@ export const ControlPanel: React.FC<Props> = ({
 }) => {
   return (
     <div style={{
-      position: 'absolute', bottom: 12, left: 12, right: 12,
+      position: 'absolute', bottom: 12, left: 12, right: 12, zIndex: 1000,
       background: 'rgba(10, 10, 30, 0.9)',
       color: '#e0e0e0',
       padding: '12px 16px',

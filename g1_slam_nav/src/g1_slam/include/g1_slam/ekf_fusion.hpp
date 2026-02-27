@@ -27,6 +27,7 @@ public:
     Eigen::Quaterniond getOrientation() const;
     Eigen::Matrix<double, 6, 6> getCovariance() const { return P_; }
 
+    void setPose(const Eigen::Matrix4d& pose);
     void reset();
 
 private:

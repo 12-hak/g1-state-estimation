@@ -8,14 +8,19 @@ import json
 import asyncio
 import threading
 import math
+import struct
 import os
+import time
+import numpy as np
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
+import sensor_msgs.msg
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from g1_msgs.msg import SlamStatus, NavigationCommand, WaypointList
 from g1_msgs.srv import SaveMap, LoadMap
@@ -44,14 +49,58 @@ class WebBridgeNode(Node):
         self.frontend_path = self.get_parameter('frontend_path').value
         self.map_downsample = self.get_parameter('map_downsample').value
 
+        # Auto-detect frontend path if not provided
+        if not self.frontend_path:
+            # 1. Try install share directory
+            try:
+                share_dir = get_package_share_directory('g1_web_interface')
+                paths = [
+                    os.path.join(share_dir, 'frontend'),
+                    os.path.join(share_dir, 'dist')
+                ]
+                for p in paths:
+                    if os.path.isdir(p) and os.path.exists(os.path.join(p, 'index.html')):
+                        self.frontend_path = p
+                        break
+            except Exception:
+                pass
+
+        # 2. Try source directory (if running from workspace root)
+        if not self.frontend_path:
+            cwd = os.getcwd()
+            src_path = os.path.join(cwd, 'src/g1_web_interface/frontend/dist')
+            if os.path.isdir(src_path) and os.path.exists(os.path.join(src_path, 'index.html')):
+                self.frontend_path = src_path
+                self.get_logger().info(f'Using source frontend: {self.frontend_path}')
+
+        if self.frontend_path:
+            self.get_logger().info(f'Serving frontend from: {self.frontend_path}')
+        else:
+            self.get_logger().error('Could not find frontend/index.html in share/ or src/ directories')
+
+        self.declare_parameter("point_size", 2.0)
+        self.point_size = self.get_parameter("point_size").value
+
         # State cache
         self._pose = None
         self._map_grid = None
         self._slam_status = None
+        self._current_scan = []
+        self._slam_map_points = []
+        self._max_map_points = 8000
         self._planned_path = None
         self._clients = set()
         self._lock = threading.Lock()
         self._loop = None
+        self._pose_seq = 0
+        self._scan_seq = 0
+        self._map_cloud_seq = 0
+        self._last_pose_wall_s = None
+        self._last_scan_wall_s = None
+        self._last_map_cloud_wall_s = None
+        self._pose_hz = 0.0
+        self._scan_hz = 0.0
+        self._map_cloud_hz = 0.0
 
         # QoS for map (transient local)
         map_qos = QoSProfile(depth=1,
@@ -59,9 +108,11 @@ class WebBridgeNode(Node):
                               reliability=ReliabilityPolicy.RELIABLE)
 
         # Subscribers
-        self.create_subscription(Odometry, 'slam/odom', self._odom_cb, 10)
+        self.create_subscription(PoseStamped, 'slam/pose', self._pose_cb, 10)
         self.create_subscription(OccupancyGrid, 'map', self._map_cb, map_qos)
         self.create_subscription(SlamStatus, 'slam/status', self._status_cb, 10)
+        self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/registered_points', self.pointCloudCallback, 5)
+        self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/map', self._slam_map_cb, 2)
         self.create_subscription(Path, 'nav/planned_path', self._path_cb, 10)
 
         # Publishers
@@ -78,19 +129,30 @@ class WebBridgeNode(Node):
         map_rate = self.get_parameter('map_publish_rate').value
         self.create_timer(1.0 / pose_rate, self._broadcast_pose)
         self.create_timer(1.0 / map_rate, self._broadcast_map)
+        self.create_timer(0.5, self._broadcast_accumulated_cloud)
+        self.create_timer(0.5, self._broadcast_debug)
 
         self.get_logger().info(
             f'Web bridge: WS={self.ws_port}, HTTP={self.http_port}')
 
-    def _odom_cb(self, msg: Odometry):
-        q = msg.pose.pose.orientation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+    def _pose_cb(self, msg: PoseStamped):
+        q = msg.pose.orientation
+        # Reliable Z-axis yaw calculation from quaternion
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        
         with self._lock:
+            now_s = time.monotonic()
+            if self._last_pose_wall_s is not None:
+                dt = max(1e-3, now_s - self._last_pose_wall_s)
+                self._pose_hz = 1.0 / dt
+            self._last_pose_wall_s = now_s
+            self._pose_seq += 1
             self._pose = {
-                'x': msg.pose.pose.position.x,
-                'y': msg.pose.pose.position.y,
-                'z': msg.pose.pose.position.z,
+                'x': msg.pose.position.x,
+                'y': msg.pose.position.y,
+                'z': msg.pose.position.z,
                 'yaw': yaw,
             }
 
@@ -133,6 +195,122 @@ class WebBridgeNode(Node):
             points.append([pose.pose.position.x, pose.pose.position.y])
         with self._lock:
             self._planned_path = points
+
+    def pointCloudCallback(self, msg):
+        offsets = {f.name: f.offset for f in msg.fields}
+        if 'x' not in offsets or 'y' not in offsets:
+            return
+
+        x_off = offsets['x']
+        y_off = offsets['y']
+        data = msg.data
+        step = msg.point_step
+
+        arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
+        x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
+        y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
+
+        stride = max(1, len(x_pts) // 800)
+        scan_points = []
+
+        with self._lock:
+            now_s = time.monotonic()
+            if self._last_scan_wall_s is not None:
+                dt = max(1e-3, now_s - self._last_scan_wall_s)
+                self._scan_hz = 1.0 / dt
+            self._last_scan_wall_s = now_s
+            self._scan_seq += 1
+            for i in range(0, len(x_pts), stride):
+                x, y = float(x_pts[i]), float(y_pts[i])
+                if np.isnan(x) or np.isnan(y):
+                    continue
+                scan_points.append([x, y])
+
+            self._current_scan = scan_points
+            payload = {
+                'type': 'status',
+                'scan_points': scan_points,
+                'point_size': self.point_size,
+            }
+            data_json = json.dumps(payload)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._send_all(data_json), self._loop)
+
+    def _slam_map_cb(self, msg):
+        offsets = {f.name: f.offset for f in msg.fields}
+        if 'x' not in offsets or 'y' not in offsets:
+            return
+
+        x_off = offsets['x']
+        y_off = offsets['y']
+        data = msg.data
+        step = msg.point_step
+        if step <= 0:
+            return
+
+        arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
+        x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
+        y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
+
+        stride = max(1, len(x_pts) // self._max_map_points)
+        points = []
+        for i in range(0, len(x_pts), stride):
+            x, y = float(x_pts[i]), float(y_pts[i])
+            if np.isnan(x) or np.isnan(y):
+                continue
+            points.append([x, y])
+
+        with self._lock:
+            self._slam_map_points = points
+
+    def _broadcast_accumulated_cloud(self):
+        if self._loop is None:
+            return
+        with self._lock:
+            if not self._slam_map_points:
+                return
+            now_s = time.monotonic()
+            if self._last_map_cloud_wall_s is not None:
+                dt = max(1e-3, now_s - self._last_map_cloud_wall_s)
+                self._map_cloud_hz = 1.0 / dt
+            self._last_map_cloud_wall_s = now_s
+            self._map_cloud_seq += 1
+            payload = {
+                'type': 'map_cloud',
+                'map_points': self._slam_map_points,
+            }
+            data = json.dumps(payload)
+        asyncio.run_coroutine_threadsafe(self._send_all(data), self._loop)
+
+    def _broadcast_debug(self):
+        if self._loop is None:
+            return
+        with self._lock:
+            now_s = time.monotonic()
+            pose_age_ms = int((now_s - self._last_pose_wall_s) * 1000) if self._last_pose_wall_s else -1
+            scan_age_ms = int((now_s - self._last_scan_wall_s) * 1000) if self._last_scan_wall_s else -1
+            map_cloud_age_ms = int((now_s - self._last_map_cloud_wall_s) * 1000) if self._last_map_cloud_wall_s else -1
+            payload = {
+                'type': 'debug',
+                'pose_seq': self._pose_seq,
+                'scan_seq': self._scan_seq,
+                'map_cloud_seq': self._map_cloud_seq,
+                'pose_hz': self._pose_hz,
+                'scan_hz': self._scan_hz,
+                'map_cloud_hz': self._map_cloud_hz,
+                'pose_age_ms': pose_age_ms,
+                'scan_age_ms': scan_age_ms,
+                'map_cloud_age_ms': map_cloud_age_ms,
+                'ws_clients': len(self._clients),
+                'scan_points': len(self._current_scan),
+                'map_points': len(self._slam_map_points),
+                'map_voxel_size': 0.0,
+            }
+            if self._pose:
+                payload['pose_yaw_deg'] = self._pose['yaw'] * 180.0 / math.pi
+            data = json.dumps(payload)
+        asyncio.run_coroutine_threadsafe(self._send_all(data), self._loop)
 
     def _broadcast_pose(self):
         if self._loop is None:
@@ -254,8 +432,11 @@ class WebBridgeNode(Node):
 
     def _run_http_server(self):
         if self.frontend_path and os.path.isdir(self.frontend_path):
+            if not os.path.exists(os.path.join(self.frontend_path, 'index.html')):
+                self.get_logger().error(f'index.html not found in {self.frontend_path}')
             handler = partial(SimpleHTTPRequestHandler, directory=self.frontend_path)
         else:
+            self.get_logger().error('Frontend path not valid, serving current directory')
             handler = SimpleHTTPRequestHandler
 
         server = HTTPServer(('0.0.0.0', self.http_port), handler)

@@ -15,6 +15,8 @@
 #include <atomic>
 #include <vector>
 #include <string>
+#include <chrono>
+#include <deque>
 
 namespace g1_sensor_bridge {
 
@@ -36,16 +38,24 @@ private:
     static void onWorkModeChange(livox_status status, uint32_t handle,
                                  LivoxLidarAsyncControlResponse* response, void* client_data);
 
-    void processPointCloud(const LivoxLidarCartesianHighRawPoint* points, uint32_t count);
+    void processPointCloud(const LivoxLidarCartesianHighRawPoint* points, uint32_t count,
+                           const std::chrono::steady_clock::time_point& packet_time);
     void processImu(float gyro_x, float gyro_y, float gyro_z,
                     float acc_x, float acc_y, float acc_z, uint64_t timestamp);
+    void updateOrientationFromImu(float gx, float gy, float gz, float ax, float ay, float az,
+                                 const std::chrono::steady_clock::time_point& tp);
+    Eigen::Quaternionf interpolateOrientation(const std::chrono::steady_clock::time_point& tp) const;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pc_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
     rclcpp::TimerBase::SharedPtr publish_timer_;
     std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
 
-    std::vector<Eigen::Vector3f> point_buffer_;
+    struct TimedPoint {
+        Eigen::Vector3f p;
+        std::chrono::steady_clock::time_point tp;
+    };
+    std::vector<TimedPoint> point_buffer_;
     std::mutex point_mutex_;
 
     struct ImuData {
@@ -55,6 +65,22 @@ private:
     };
     ImuData latest_imu_;
     std::mutex imu_mutex_;
+
+    // Stabilized stream (LIO-Livox style): IMU-based motion compensation / deskew
+    bool use_stabilized_;
+    float deskew_span_s_;
+    size_t max_imu_samples_;
+    Eigen::Quaternionf imu_q_;
+    std::chrono::steady_clock::time_point last_imu_tp_;
+    bool last_imu_tp_valid_;
+    float imu_kp_;
+    float imu_max_dt_s_;
+    struct ImuSample {
+        std::chrono::steady_clock::time_point tp;
+        Eigen::Quaternionf q;
+    };
+    std::deque<ImuSample> imu_samples_;
+    mutable std::mutex imu_orientation_mutex_;
 
     // Parameters
     std::string frame_id_;

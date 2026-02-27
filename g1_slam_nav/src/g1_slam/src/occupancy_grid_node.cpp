@@ -26,7 +26,7 @@ public:
         declare_parameter("map_frame", "map");
         declare_parameter("publish_rate", 1.0);
         declare_parameter("free_threshold", 0.3);
-        declare_parameter("occupied_threshold", 0.65);
+        declare_parameter("occupied_threshold", 0.50);
 
         resolution_ = get_parameter("resolution").as_double();
         width_ = get_parameter("width").as_double();
@@ -93,7 +93,7 @@ private:
             int idx = gy * grid_width_ + gx;
 
             // Bayesian update (log-odds): increase probability of occupied
-            log_odds_[idx] = std::min(log_odds_[idx] + 0.9, 5.0);
+            log_odds_[idx] = std::min(log_odds_[idx] + 1.5, 10.0);
         }
 
         // Ray-casting for free space (from robot position to each point)
@@ -107,7 +107,11 @@ private:
         int robot_gx = static_cast<int>((rx - origin_x_) / resolution_);
         int robot_gy = static_cast<int>((ry - origin_y_) / resolution_);
 
+        int pt_idx = 0;
         for (const auto& p : cloud) {
+            pt_idx++;
+            if (pt_idx % 4 != 0) continue; // Downsample ray-casting to save CPU
+            
             if (p.z < min_obstacle_height_ || p.z > max_obstacle_height_) continue;
 
             int end_gx = static_cast<int>((p.x - origin_x_) / resolution_);

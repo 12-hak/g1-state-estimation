@@ -13,21 +13,24 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(nav2_msgs REQUIRED)
+find_package(nav2_msgs QUIET)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(g1_msgs REQUIRED)
 
-# Navigation command server
-add_executable(nav_command_node src/nav_command_node.cpp)
-ament_target_dependencies(nav_command_node
-  rclcpp rclcpp_action nav_msgs geometry_msgs nav2_msgs tf2 tf2_ros g1_msgs
-)
-
-install(TARGETS
-  nav_command_node
-  DESTINATION lib/${PROJECT_NAME}
-)
+# Navigation command server (only if nav2_msgs is available, e.g. after: sudo apt install ros-humble-nav2-msgs)
+if(nav2_msgs_FOUND)
+  add_executable(nav_command_node src/nav_command_node.cpp)
+  ament_target_dependencies(nav_command_node
+    rclcpp rclcpp_action nav_msgs geometry_msgs nav2_msgs tf2 tf2_ros g1_msgs
+  )
+  install(TARGETS
+    nav_command_node
+    DESTINATION lib/${PROJECT_NAME}
+  )
+else()
+  message(STATUS "nav2_msgs not found: nav_command_node will not be built. Install ros-humble-nav2-msgs for full navigation.")
+endif()
 
 install(DIRECTORY launch params
   DESTINATION share/${PROJECT_NAME}

@@ -6,6 +6,9 @@
 
 namespace g1_slam {
 
+LoopClosureDetector::LoopClosureDetector()
+    : LoopClosureDetector(Config()) {}
+
 LoopClosureDetector::LoopClosureDetector(const Config& config)
     : config_(config) {}
 

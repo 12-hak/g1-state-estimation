@@ -23,8 +23,13 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_config', default_value=''),
         DeclareLaunchArgument('enable_loop_closure', default_value='true'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument('map_publish_rate', default_value='2.0'),
         DeclareLaunchArgument('ws_port', default_value='9090'),
         DeclareLaunchArgument('http_port', default_value='8080'),
+        DeclareLaunchArgument('start_unitree_bridge', default_value='true',
+                              description='Set false to skip unitree/leg_odometry (e.g. if unitree_bridge_node causes bad_alloc)'),
+        DeclareLaunchArgument('frontend_path', default_value='',
+                              description='Path to the web frontend dist folder'),
 
         # 1. Sensor Bridge
         IncludeLaunchDescription(
@@ -36,6 +41,7 @@ def generate_launch_description():
                 'network_interface': LaunchConfiguration('network_interface'),
                 'lidar_config': LaunchConfiguration('lidar_config'),
                 'flip_lidar': 'true',
+                'start_unitree_bridge': LaunchConfiguration('start_unitree_bridge'),
             }.items(),
         ),
 
@@ -67,6 +73,7 @@ def generate_launch_description():
             launch_arguments={
                 'ws_port': LaunchConfiguration('ws_port'),
                 'http_port': LaunchConfiguration('http_port'),
+                'frontend_path': LaunchConfiguration('frontend_path'),
             }.items(),
         ),
     ])

@@ -22,6 +22,8 @@ def generate_launch_description():
         DeclareLaunchArgument('network_interface', default_value='eth0'),
         DeclareLaunchArgument('lidar_config', default_value=''),
         DeclareLaunchArgument('enable_loop_closure', default_value='true'),
+        DeclareLaunchArgument('start_unitree_bridge', default_value='true',
+                              description='Set false to skip unitree/leg_odometry (e.g. if unitree_bridge_node causes bad_alloc)'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -31,6 +33,7 @@ def generate_launch_description():
                 'robot_type': LaunchConfiguration('robot_type'),
                 'network_interface': LaunchConfiguration('network_interface'),
                 'lidar_config': LaunchConfiguration('lidar_config'),
+                'start_unitree_bridge': LaunchConfiguration('start_unitree_bridge'),
             }.items(),
         ),
 

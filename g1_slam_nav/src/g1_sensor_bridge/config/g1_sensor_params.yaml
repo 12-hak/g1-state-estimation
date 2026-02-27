@@ -10,6 +10,8 @@ livox_bridge:
     lidar_offset_y: 0.0
     lidar_offset_z: 0.60
     publish_rate: 10.0
+    use_stabilized: false  # Keep raw LiDAR frame; ICP handles motion in map frame
+    deskew_span_s: 0.012  # assumed packet time span (s) for per-point time assignment
 
 unitree_bridge:
   ros__parameters:

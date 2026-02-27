@@ -17,6 +17,12 @@ EKFFusion::EKFFusion() {
     Q_(5,5) = 0.0005; // yaw
 }
 
+void EKFFusion::setPose(const Eigen::Matrix4d& pose) {
+    state_.head<3>() = pose.block<3,1>(0,3);
+    state_.tail<3>() = rotationMatrixToEuler(pose.block<3,3>(0,0));
+    P_ *= 0.5;
+}
+
 void EKFFusion::reset() {
     state_.setZero();
     P_ = Eigen::Matrix<double, 6, 6>::Identity() * 0.01;

@@ -6,19 +6,16 @@
 
 namespace g1_slam {
 
-static Eigen::Matrix3d skew(const Eigen::Vector3d& v) {
-    Eigen::Matrix3d S;
-    S <<    0, -v.z(),  v.y(),
-         v.z(),     0, -v.x(),
-        -v.y(),  v.x(),     0;
-    return S;
-}
+KissICPWrapper::KissICPWrapper()
+    : KissICPWrapper(KissICPConfig()) {}
 
 KissICPWrapper::KissICPWrapper(const KissICPConfig& config)
     : config_(config), local_map_(config.voxel_size) {}
 
 void KissICPWrapper::reset() {
     current_pose_ = Eigen::Matrix4d::Identity();
+    prev_pose_ = Eigen::Matrix4d::Identity();
+    has_prev_pose_ = false;
     local_map_.clear();
     model_deviations_.clear();
     has_moved_ = false;
@@ -48,7 +45,9 @@ std::vector<Eigen::Vector3d> KissICPWrapper::voxelDownsample(
 
     struct VKey {
         int32_t x, y, z;
-        bool operator==(const VKey& o) const { return x == o.x && y == o.y && z == o.z; }
+        bool operator==(const VKey& o) const {
+            return x == o.x && y == o.y && z == o.z;
+        }
     };
     struct VKeyHash {
         size_t operator()(const VKey& k) const {
@@ -83,7 +82,7 @@ std::vector<Eigen::Vector3d> KissICPWrapper::voxelDownsample(
     return result;
 }
 
-ICPResult KissICPWrapper::pointToPlaneICP(
+ICPResult KissICPWrapper::translationOnlyICP(
     const std::vector<Eigen::Vector3d>& source,
     const Eigen::Matrix4d& initial_guess) {
 
@@ -95,32 +94,25 @@ ICPResult KissICPWrapper::pointToPlaneICP(
         return result;
     }
 
-    Eigen::Matrix4d T = initial_guess;
+    // Rotation is FIXED from the caller (odometry/IMU). ICP only refines translation.
+    const Eigen::Matrix3d R = initial_guess.block<3,3>(0,0);
+    Eigen::Vector3d t = initial_guess.block<3,1>(0,3);
+
     double adaptive_threshold = computeAdaptiveThreshold();
     double threshold_sq = adaptive_threshold * adaptive_threshold;
 
     for (int iter = 0; iter < config_.max_iterations; ++iter) {
-        Eigen::Matrix3d R = T.block<3,3>(0,0);
-        Eigen::Vector3d t = T.block<3,1>(0,3);
-
-        // Transform source points
-        std::vector<Eigen::Vector3d> src_transformed(source.size());
-        for (size_t i = 0; i < source.size(); ++i) {
-            src_transformed[i] = R * source[i] + t;
-        }
-
-        // Find correspondences and compute point-to-point residuals
-        // (point-to-plane with estimated normals from local neighborhood)
-        Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
-        Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Zero();
+        Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
+        Eigen::Vector3d b_vec = Eigen::Vector3d::Zero();
         int num_correspondences = 0;
         double total_error = 0.0;
 
-        for (const auto& sp : src_transformed) {
+        for (const auto& sp_local : source) {
+            Eigen::Vector3d sp = R * sp_local + t;
+
             auto neighbors = local_map_.getPointsNear(sp, adaptive_threshold);
             if (neighbors.empty()) continue;
 
-            // Find closest point
             double best_dist_sq = std::numeric_limits<double>::max();
             Eigen::Vector3d closest;
             for (const auto& np : neighbors) {
@@ -133,63 +125,36 @@ ICPResult KissICPWrapper::pointToPlaneICP(
 
             if (best_dist_sq > threshold_sq) continue;
 
-            // Estimate normal from local neighborhood via PCA
-            Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
-            if (neighbors.size() >= 3) {
-                Eigen::Vector3d mean = Eigen::Vector3d::Zero();
-                for (const auto& n : neighbors) mean += n;
-                mean /= static_cast<double>(neighbors.size());
+            Eigen::Vector3d residual = sp - closest;
+            total_error += residual.squaredNorm();
 
-                Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-                for (const auto& n : neighbors) {
-                    Eigen::Vector3d d = n - mean;
-                    cov += d * d.transpose();
-                }
-                cov /= static_cast<double>(neighbors.size());
-
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
-                normal = solver.eigenvectors().col(0);  // Smallest eigenvalue = normal
-            }
-
-            Eigen::Vector3d residual_vec = sp - closest;
-            double residual = residual_vec.dot(normal);
-            total_error += residual * residual;
-
-            // Jacobian: d(residual)/d(xi) where xi = [tx, ty, tz, rx, ry, rz]
-            Eigen::Matrix<double, 1, 6> J;
-            J.block<1,3>(0,0) = normal.transpose();
-            J.block<1,3>(0,3) = -normal.transpose() * skew(sp);
-
-            H += J.transpose() * J;
-            b += J.transpose() * (-residual);
+            // d(residual)/d(t) = I  (rotation is fixed)
+            A += Eigen::Matrix3d::Identity();
+            b_vec += -residual;
             num_correspondences++;
         }
 
-        if (num_correspondences < 10) break;
+        if (num_correspondences < 20) break;
 
-        // Solve H * dx = b
-        Eigen::Matrix<double, 6, 1> dx = H.ldlt().solve(b);
+        Eigen::Vector3d dt = A.ldlt().solve(b_vec);
+        t += dt;
 
-        // Update transform
-        Eigen::Matrix4d dT = Eigen::Matrix4d::Identity();
-        dT.block<3,3>(0,0) = (Eigen::AngleAxisd(dx(5), Eigen::Vector3d::UnitZ()) *
-                               Eigen::AngleAxisd(dx(4), Eigen::Vector3d::UnitY()) *
-                               Eigen::AngleAxisd(dx(3), Eigen::Vector3d::UnitX())).toRotationMatrix();
-        dT.block<3,1>(0,3) = dx.head<3>();
-
-        T = dT * T;
         result.iterations = iter + 1;
         result.fitness_score = total_error / num_correspondences;
+        result.num_correspondences = num_correspondences;
 
-        if (dx.norm() < config_.convergence_threshold) {
+        if (dt.norm() < config_.convergence_threshold) {
             result.converged = true;
             break;
         }
     }
 
-    result.pose = T;
-    if (result.iterations == config_.max_iterations) {
-        result.converged = (result.fitness_score < 0.5);
+    result.pose = Eigen::Matrix4d::Identity();
+    result.pose.block<3,3>(0,0) = R;
+    result.pose.block<3,1>(0,3) = t;
+
+    if (!result.converged && result.iterations == config_.max_iterations) {
+        result.converged = (result.fitness_score < 0.1);
     }
 
     return result;
@@ -211,23 +176,24 @@ ICPResult KissICPWrapper::registerFrame(
         guess = current_pose_;
     }
 
-    auto result = pointToPlaneICP(preprocessed, guess);
+    auto result = translationOnlyICP(preprocessed, guess);
 
     if (result.converged) {
-        // Track motion for adaptive threshold
-        Eigen::Vector3d delta = result.pose.block<3,1>(0,3) - current_pose_.block<3,1>(0,3);
+        Eigen::Vector3d delta =
+            result.pose.block<3,1>(0,3) - current_pose_.block<3,1>(0,3);
         model_deviations_.push_back(delta.norm());
         if (model_deviations_.size() > 100) {
             model_deviations_.erase(model_deviations_.begin());
         }
 
+        prev_pose_ = current_pose_;
+        has_prev_pose_ = true;
         current_pose_ = result.pose;
 
         if (!has_moved_ && delta.norm() > config_.min_motion_threshold) {
             has_moved_ = true;
         }
 
-        // Add transformed points to local map
         Eigen::Matrix3d R = current_pose_.block<3,3>(0,0);
         Eigen::Vector3d t = current_pose_.block<3,1>(0,3);
         std::vector<Eigen::Vector3d> world_points(preprocessed.size());
@@ -236,7 +202,6 @@ ICPResult KissICPWrapper::registerFrame(
         }
         local_map_.addPoints(world_points);
 
-        // Trim far-away points to bound map size
         local_map_.removePointsFarFrom(t, config_.max_range * 3.0);
     }
 

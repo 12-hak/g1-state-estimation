@@ -4,6 +4,9 @@ import type { RobotPose, MapData, Waypoint } from '../types';
 interface Props {
   pose: RobotPose | null;
   mapData: MapData | null;
+  mapPoints: number[][];
+  scanPoints: number[][];
+  pointSize: number;
   waypoints: Waypoint[];
   onClickMap: (x: number, y: number) => void;
   onAddWaypoint: (x: number, y: number) => void;
@@ -11,7 +14,7 @@ interface Props {
 }
 
 export const MapCanvas: React.FC<Props> = ({
-  pose, mapData, waypoints, onClickMap, onAddWaypoint, mode,
+  pose, mapData, mapPoints, scanPoints, pointSize, waypoints, onClickMap, onAddWaypoint, mode,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasCenteredRef = useRef(false);
@@ -65,7 +68,17 @@ export const MapCanvas: React.FC<Props> = ({
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
     }
 
-    // Map (occupancy grid)
+    // North Indicator
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.font = '12px Inter';
+    ctx.fillText('N', w / 2, 20);
+    ctx.beginPath();
+    ctx.moveTo(w / 2, 25);
+    ctx.lineTo(w / 2, 5);
+    ctx.stroke();
+
+    // Map (occupancy grid) - HIDDEN to focus on high-fidelity LiDAR
+    /*
     if (mapData) {
       const res = mapData.resolution;
       for (let gy = 0; gy < mapData.height; gy++) {
@@ -90,6 +103,7 @@ export const MapCanvas: React.FC<Props> = ({
         }
       }
     }
+    */
 
     // Planned path
     if (mapData?.path && mapData.path.length > 1) {
@@ -120,6 +134,32 @@ export const MapCanvas: React.FC<Props> = ({
       ctx.fillText(`${idx + 1}`, cx, cy + 4);
     });
 
+    // Accumulated world-frame map (blue -- stays fixed as robot moves)
+    const mapPtSize = Math.max(pointSize, 2);
+    ctx.fillStyle = 'rgba(30, 140, 255, 0.55)';
+    for (let i = 0; i < mapPoints.length; i++) {
+      const { cx, cy } = worldToCanvas(mapPoints[i][0], mapPoints[i][1]);
+      ctx.fillRect(cx - mapPtSize / 2, cy - mapPtSize / 2, mapPtSize, mapPtSize);
+    }
+
+    // Current scan (bright green -- shows live LiDAR sweep)
+    ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
+    for (let i = 0; i < scanPoints.length; i++) {
+      const { cx, cy } = worldToCanvas(scanPoints[i][0], scanPoints[i][1]);
+      ctx.fillRect(cx - pointSize / 2, cy - pointSize / 2, pointSize, pointSize);
+    }
+
+    // Origin marker (start position reference for loop closure)
+    {
+      const { cx, cy } = worldToCanvas(0, 0);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10); ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 2 * Math.PI); ctx.fill();
+    }
+
     // Robot
     if (pose) {
       const { cx, cy } = worldToCanvas(pose.x, pose.y);
@@ -145,7 +185,7 @@ export const MapCanvas: React.FC<Props> = ({
       ctx.restore();
     }
 
-  }, [pose, mapData, waypoints, view, worldToCanvas]);
+  }, [pose, mapData, mapPoints, scanPoints, waypoints, view, worldToCanvas]);
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
