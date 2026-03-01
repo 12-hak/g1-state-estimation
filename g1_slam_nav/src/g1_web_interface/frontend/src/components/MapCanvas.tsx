@@ -6,6 +6,10 @@ interface Props {
   mapData: MapData | null;
   mapPoints: number[][];
   scanPoints: number[][];
+  /** After startup, only draw green when true (avoids spin when ICP lost). */
+  alignmentOk: boolean;
+  /** First ~10s: show green scan even when not aligned so map can start. */
+  startupGrace: boolean;
   pointSize: number;
   waypoints: Waypoint[];
   onClickMap: (x: number, y: number) => void;
@@ -14,8 +18,9 @@ interface Props {
 }
 
 export const MapCanvas: React.FC<Props> = ({
-  pose, mapData, mapPoints, scanPoints, pointSize, waypoints, onClickMap, onAddWaypoint, mode,
+  pose, mapData, mapPoints, scanPoints, alignmentOk, startupGrace, pointSize, waypoints, onClickMap, onAddWaypoint, mode,
 }) => {
+  const showGreen = startupGrace || alignmentOk;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasCenteredRef = useRef(false);
   const [view, setView] = useState({ offsetX: 0, offsetY: 0, scale: 80 });
@@ -134,19 +139,23 @@ export const MapCanvas: React.FC<Props> = ({
       ctx.fillText(`${idx + 1}`, cx, cy + 4);
     });
 
-    // Accumulated world-frame map (blue -- stays fixed as robot moves)
-    const mapPtSize = Math.max(pointSize, 2);
-    ctx.fillStyle = 'rgba(30, 140, 255, 0.55)';
-    for (let i = 0; i < mapPoints.length; i++) {
-      const { cx, cy } = worldToCanvas(mapPoints[i][0], mapPoints[i][1]);
-      ctx.fillRect(cx - mapPtSize / 2, cy - mapPtSize / 2, mapPtSize, mapPtSize);
+    // Accumulated world-frame map (blue) — always show when we have points
+    if (mapPoints.length > 0) {
+      const mapPtSize = Math.max(pointSize, 2);
+      ctx.fillStyle = 'rgba(30, 140, 255, 0.55)';
+      for (let i = 0; i < mapPoints.length; i++) {
+        const { cx, cy } = worldToCanvas(mapPoints[i][0], mapPoints[i][1]);
+        ctx.fillRect(cx - mapPtSize / 2, cy - mapPtSize / 2, mapPtSize, mapPtSize);
+      }
     }
 
-    // Current scan (bright green -- shows live LiDAR sweep)
-    ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
-    for (let i = 0; i < scanPoints.length; i++) {
-      const { cx, cy } = worldToCanvas(scanPoints[i][0], scanPoints[i][1]);
-      ctx.fillRect(cx - pointSize / 2, cy - pointSize / 2, pointSize, pointSize);
+    // Current scan (green) — during startup grace or when aligned (avoids spin when lost after grace)
+    if (showGreen && scanPoints.length > 0) {
+      ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
+      for (let i = 0; i < scanPoints.length; i++) {
+        const { cx, cy } = worldToCanvas(scanPoints[i][0], scanPoints[i][1]);
+        ctx.fillRect(cx - pointSize / 2, cy - pointSize / 2, pointSize, pointSize);
+      }
     }
 
     // Origin marker (start position reference for loop closure)
@@ -185,7 +194,7 @@ export const MapCanvas: React.FC<Props> = ({
       ctx.restore();
     }
 
-  }, [pose, mapData, mapPoints, scanPoints, waypoints, view, worldToCanvas]);
+  }, [pose, mapData, mapPoints, scanPoints, showGreen, waypoints, view, worldToCanvas]);
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {

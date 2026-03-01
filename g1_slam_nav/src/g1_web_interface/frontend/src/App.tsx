@@ -3,7 +3,7 @@ import { MapCanvas } from './components/MapCanvas';
 import { StatusPanel } from './components/StatusPanel';
 import { ControlPanel } from './components/ControlPanel';
 import { useWebSocket } from './hooks/useWebSocket';
-import type { RobotPose, MapData, SlamStatus, Waypoint, WSMessage, DebugTelemetry } from './types';
+import type { RobotPose, MapData, SlamStatus, Waypoint, WSMessage } from './types';
 
 const WS_PORT = (import.meta as any).env?.VITE_WS_PORT || '9090';
 const WS_URL = `ws://${window.location.hostname}:${WS_PORT}`;
@@ -16,35 +16,36 @@ export const App: React.FC = () => {
   const [mapPoints, setMapPoints] = useState<number[][]>([]);
   const [scanPoints, setScanPoints] = useState<number[][]>([]);
   const [pointSize, setPointSize] = useState(2);
-  const [debug, setDebug] = useState<DebugTelemetry | null>(null);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+
+  /** After startup grace, only draw green scan when ICP converged + enough points (avoids green spin when lost). */
+  const MIN_ALIGN_POINTS = 50;
+  const alignmentOk = !!(status?.localization_valid && mapPoints.length >= MIN_ALIGN_POINTS);
+  const [startupGrace, setStartupGrace] = useState(true);
   const [mode, setMode] = useState<'navigate' | 'waypoint'>('navigate');
   const lastPoseAtRef = useRef<number | null>(null);
   const lastYawRef = useRef<number | null>(null);
+
+  // For first 10s show scan regardless of alignment so map can build; then apply alignment rule
+  useEffect(() => {
+    const t = setTimeout(() => setStartupGrace(false), 10000);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     return onMessage((data: WSMessage) => {
       if (data.type === 'pose') {
         setPose({ x: data.x, y: data.y, z: data.z, yaw: data.yaw });
         if (data.status) setStatus(data.status);
-        const now = performance.now();
-        if (lastPoseAtRef.current !== null && lastYawRef.current !== null) {
-          const dt = Math.max(1e-3, (now - lastPoseAtRef.current) / 1000.0);
-          let dYaw = data.yaw - lastYawRef.current;
-          while (dYaw > Math.PI) dYaw -= 2.0 * Math.PI;
-          while (dYaw < -Math.PI) dYaw += 2.0 * Math.PI;
-          const yawRateDegS = (dYaw * 180.0 / Math.PI) / dt;
-          setDebug(prev => (prev ? { ...prev, pose_yaw_rate_deg_s: yawRateDegS } : prev));
-        }
-        lastPoseAtRef.current = now;
+        lastPoseAtRef.current = performance.now();
         lastYawRef.current = data.yaw;
       } else if (data.type === 'status') {
         setScanPoints(data.scan_points);
         if (data.point_size) setPointSize(data.point_size);
+        if (data.status) setStatus(data.status);
       } else if (data.type === 'map_cloud') {
         setMapPoints(data.map_points);
-      } else if (data.type === 'debug') {
-        setDebug(data);
+        if (data.status) setStatus(data.status);
       } else if (data.type === 'map') {
         setMapData({
           width: data.width,
@@ -100,13 +101,15 @@ export const App: React.FC = () => {
         mapData={mapData}
         mapPoints={mapPoints}
         scanPoints={scanPoints}
+        alignmentOk={alignmentOk}
+        startupGrace={startupGrace}
         pointSize={pointSize}
         waypoints={waypoints}
         onClickMap={handleClickMap}
         onAddWaypoint={handleAddWaypoint}
         mode={mode}
       />
-      <StatusPanel pose={pose} status={status} connected={connected} debug={debug} />
+      <StatusPanel pose={pose} status={status} connected={connected} />
       <ControlPanel
         mode={mode}
         onModeChange={setMode}

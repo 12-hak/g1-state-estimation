@@ -130,7 +130,6 @@ class WebBridgeNode(Node):
         self.create_timer(1.0 / pose_rate, self._broadcast_pose)
         self.create_timer(1.0 / map_rate, self._broadcast_map)
         self.create_timer(0.5, self._broadcast_accumulated_cloud)
-        self.create_timer(0.5, self._broadcast_debug)
 
         self.get_logger().info(
             f'Web bridge: WS={self.ws_port}, HTTP={self.http_port}')
@@ -232,6 +231,8 @@ class WebBridgeNode(Node):
                 'scan_points': scan_points,
                 'point_size': self.point_size,
             }
+            if self._slam_status is not None:
+                payload['status'] = self._slam_status
             data_json = json.dumps(payload)
 
         if self._loop:
@@ -280,35 +281,8 @@ class WebBridgeNode(Node):
                 'type': 'map_cloud',
                 'map_points': self._slam_map_points,
             }
-            data = json.dumps(payload)
-        asyncio.run_coroutine_threadsafe(self._send_all(data), self._loop)
-
-    def _broadcast_debug(self):
-        if self._loop is None:
-            return
-        with self._lock:
-            now_s = time.monotonic()
-            pose_age_ms = int((now_s - self._last_pose_wall_s) * 1000) if self._last_pose_wall_s else -1
-            scan_age_ms = int((now_s - self._last_scan_wall_s) * 1000) if self._last_scan_wall_s else -1
-            map_cloud_age_ms = int((now_s - self._last_map_cloud_wall_s) * 1000) if self._last_map_cloud_wall_s else -1
-            payload = {
-                'type': 'debug',
-                'pose_seq': self._pose_seq,
-                'scan_seq': self._scan_seq,
-                'map_cloud_seq': self._map_cloud_seq,
-                'pose_hz': self._pose_hz,
-                'scan_hz': self._scan_hz,
-                'map_cloud_hz': self._map_cloud_hz,
-                'pose_age_ms': pose_age_ms,
-                'scan_age_ms': scan_age_ms,
-                'map_cloud_age_ms': map_cloud_age_ms,
-                'ws_clients': len(self._clients),
-                'scan_points': len(self._current_scan),
-                'map_points': len(self._slam_map_points),
-                'map_voxel_size': 0.0,
-            }
-            if self._pose:
-                payload['pose_yaw_deg'] = self._pose['yaw'] * 180.0 / math.pi
+            if self._slam_status is not None:
+                payload['status'] = self._slam_status
             data = json.dumps(payload)
         asyncio.run_coroutine_threadsafe(self._send_all(data), self._loop)
 
