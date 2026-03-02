@@ -2,6 +2,8 @@
 
 Closed-loop SLAM and navigation stack for the Unitree G1 humanoid robot (and Go2 quadruped), built on ROS2 Humble with C++ performance-critical paths and a React web interface.
 
+**Point-Lio branch:** This repo has a branch `Point-Lio` that adds [Point-LIO](https://github.com/dfloreaa/point_lio_ros2) (LiDAR–Inertial Odometry) for Livox Mid-360 using **livox_ros_driver2**. Use it for robust LIO mapping with per-point timestamps. See **[docs/POINT_LIO_JETSON.md](docs/POINT_LIO_JETSON.md)** for Jetson build and run (copy repo, init submodules, build Livox driver + this workspace, then run).
+
 ## Architecture
 
 ```
@@ -108,7 +110,9 @@ Robot-specific parameters in `g1_bringup/config/`:
 - `g1_robot.yaml` - G1 humanoid (29 joints, upside-down LiDAR)
 - `go2_robot.yaml` - Go2 quadruped (12 joints, standard LiDAR mount)
 
-SLAM tuning in `g1_slam/config/slam_params.yaml`
+SLAM tuning in `g1_slam/config/slam_params.yaml`:
+- **`map_build_mode`**: `"strict"` = only add to the blue map when the scan is firmly aligned (can lose loc); `"motion"` = always add from odom pose so the map grows from robot movement and over-scan (solid blue map, may drift). Default in config is `"motion"`. See [docs/SLAM_REVIEW_AND_ALTERNATIVES.md](docs/SLAM_REVIEW_AND_ALTERNATIVES.md) for why we added this and alternatives (e.g. Point-LIO).
+
 Nav2 tuning in `g1_navigation/params/nav2_params.yaml`
 
 ## Running on G1 (Optimized)

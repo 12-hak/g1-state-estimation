@@ -1,0 +1,2 @@
+# Shell scripts must use LF on checkout so they run on Jetson/Linux
+*.sh text eol=lf

@@ -1,0 +1,111 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Status1
+      Splitter Ratio: 0.5
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+    Splitter Ratio: 0.59
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Keep: 100
+      Name: Odometry
+      Topic:
+        Depth: 5
+        Reliability Policy: Reliable
+        Value: /Odometry
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Path
+      Topic:
+        Depth: 5
+        Reliability Policy: Reliable
+        Value: /path
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/PointCloud2
+      Color Transformer: AxisColor
+      Decay Time: 30
+      Enabled: true
+      Name: CloudRegistered
+      Size (m): 0.01
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Reliability Policy: Reliable
+        Value: /cloud_registered
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/PointCloud2
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Name: CloudEffected
+      Size (m): 0.02
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Reliability Policy: Reliable
+        Value: /cloud_effected
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/PointCloud2
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Name: CloudMap
+      Size (m): 0.02
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Reliability Policy: Reliable
+        Value: /Laser_map
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 0; 0; 0
+    Fixed Frame: camera_init
+    Frame Rate: 30
+  Name: root
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 25
+      Name: Current View
+      Near Clip Distance: 0.01
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+    Saved: ~
+Window Geometry:
+  Height: 846
+  Width: 1453

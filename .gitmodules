@@ -1,0 +1,3 @@
+[submodule "g1_slam_nav/src/point_lio_ros2"]
+	path = g1_slam_nav/src/point_lio_ros2
+	url = https://github.com/dfloreaa/point_lio_ros2.git
