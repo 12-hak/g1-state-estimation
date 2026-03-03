@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- Minimal Unitree G1 for Foxglove: root = aft_mapped (matches Point-LIO TF). -->
+<robot name="g1_minimal">
+  <link name="aft_mapped">
+    <visual>
+      <origin xyz="0 0 0.35" rpy="0 0 0"/>
+      <geometry>
+        <!-- Approximate G1 torso: width 0.22, depth 0.14, height 0.7 m -->
+        <box size="0.22 0.14 0.7"/>
+      </geometry>
+      <material name="grey">
+        <color rgba="0.5 0.5 0.55 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.35" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.14 0.7"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.35" rpy="0 0 0"/>
+      <mass value="1"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+</robot>

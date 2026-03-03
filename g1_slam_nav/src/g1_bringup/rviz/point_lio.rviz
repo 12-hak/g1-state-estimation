@@ -54,7 +54,7 @@ Visualization Manager:
       Decay Time: 30
       Enabled: true
       Name: CloudRegistered
-      Size (m): 0.01
+      Size (m): 0.005
       Style: Flat Squares
       Topic:
         Depth: 5
@@ -80,7 +80,7 @@ Visualization Manager:
       Decay Time: 0
       Enabled: true
       Name: CloudMap
-      Size (m): 0.02
+      Size (m): 0.015
       Style: Flat Squares
       Topic:
         Depth: 5

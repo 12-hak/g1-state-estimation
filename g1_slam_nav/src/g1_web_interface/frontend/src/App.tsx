@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MapCanvas, type ScanFrame } from './components/MapCanvas';
+import { NearScan3D } from './components/NearScan3D';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { RobotPose, WSMessage } from './types';
 
@@ -88,6 +89,7 @@ export const App: React.FC = () => {
         trailVersion={trailVersion}
         onTrailUpdate={onTrailUpdate}
       />
+      <NearScan3D scanFrames={scanFrames} pose={pose} />
       <div style={{
         position: 'absolute',
         top: 8,

@@ -28,6 +28,9 @@ def generate_launch_description():
             'map_frame', default_value='map'),
         DeclareLaunchArgument(
             'flip_lidar', default_value='true'),
+        DeclareLaunchArgument(
+            'map_build_mode', default_value='motion',
+            description='strict=add only when aligned; motion=always add from odom (solid blue map from movement)'),
 
         Node(
             package='g1_slam',
@@ -39,6 +42,7 @@ def generate_launch_description():
                     'enable_loop_closure'),
                 'map_frame': LaunchConfiguration('map_frame'),
                 'flip_lidar': LaunchConfiguration('flip_lidar'),
+                'map_build_mode': LaunchConfiguration('map_build_mode'),
                 'lidar_offset_x': 0.10,
                 'lidar_offset_y': 0.0,
                 'lidar_offset_z': 0.60,

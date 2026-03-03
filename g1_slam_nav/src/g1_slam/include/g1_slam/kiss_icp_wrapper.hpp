@@ -23,6 +23,7 @@ struct ICPResult {
     double fitness_score = 0.0;
     int iterations = 0;
     int num_correspondences = 0;
+    int num_source_points = 0;  // scan points considered for matching
 };
 
 class KissICPWrapper {
@@ -32,6 +33,9 @@ public:
 
     ICPResult registerFrame(const std::vector<Eigen::Vector3d>& frame,
                             const Eigen::Matrix4d& initial_guess = Eigen::Matrix4d::Identity());
+
+    void addFrameToMap(const std::vector<Eigen::Vector3d>& frame,
+                       const Eigen::Matrix4d& pose);
 
     Eigen::Matrix4d currentPose() const { return current_pose_; }
     const VoxelHashMap& localMap() const { return local_map_; }

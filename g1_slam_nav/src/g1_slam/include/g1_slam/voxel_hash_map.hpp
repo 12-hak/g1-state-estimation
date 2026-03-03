@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <utility>
 
 namespace g1_slam {
 
@@ -44,8 +45,8 @@ private:
     VoxelKey toKey(const Eigen::Vector3d& point) const;
 
     double voxel_size_;
-    size_t max_points_per_voxel_ = 20;
-    std::unordered_map<VoxelKey, std::vector<Eigen::Vector3d>, VoxelKeyHash> map_;
+    // One centroid per voxel (running average) for a clean, denoised map
+    std::unordered_map<VoxelKey, std::pair<Eigen::Vector3d, size_t>, VoxelKeyHash> map_;
 };
 
 }  // namespace g1_slam

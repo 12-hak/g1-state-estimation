@@ -17,6 +17,7 @@
 #include "g1_msgs/msg/slam_status.hpp"
 
 #include <mutex>
+#include <string>
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -62,10 +63,9 @@ public:
             std::bind(&SlamNode::publishMap, this));
 
         RCLCPP_INFO(get_logger(),
-            "SLAM node initialized (voxel=%.2f, range=%.1f-%.1f, lidar_offset=[%.2f,%.2f,%.2f] flip=%s)",
+            "SLAM node initialized (voxel=%.2f, range=%.1f-%.1f, map_build_mode=%s)",
             icp_config_.voxel_size, icp_config_.min_range, icp_config_.max_range,
-            lidar_offset_x_, lidar_offset_y_, lidar_offset_z_,
-            flip_lidar_ ? "true" : "false");
+            map_build_mode_.c_str());
     }
 
 private:
@@ -86,6 +86,11 @@ private:
         declare_parameter("lidar_offset_y", 0.0);
         declare_parameter("lidar_offset_z", 0.60);
         declare_parameter("flip_lidar", true);
+        declare_parameter("min_align_correspondences", 50);
+        declare_parameter("max_align_fitness", 0.08);
+        declare_parameter("min_overlap_ratio", 0.2);
+        declare_parameter("min_overlap_ratio_existing_map", 0.45);
+        declare_parameter("map_build_mode", std::string("strict"));
 
         icp_config_.voxel_size = get_parameter("voxel_size").as_double();
         icp_config_.max_range = get_parameter("max_range").as_double();
@@ -100,6 +105,12 @@ private:
         lidar_offset_y_ = get_parameter("lidar_offset_y").as_double();
         lidar_offset_z_ = get_parameter("lidar_offset_z").as_double();
         flip_lidar_ = get_parameter("flip_lidar").as_bool();
+        min_align_correspondences_ = get_parameter("min_align_correspondences").as_int();
+        max_align_fitness_ = get_parameter("max_align_fitness").as_double();
+        min_overlap_ratio_ = get_parameter("min_overlap_ratio").as_double();
+        min_overlap_ratio_existing_map_ =
+            get_parameter("min_overlap_ratio_existing_map").as_double();
+        map_build_mode_ = get_parameter("map_build_mode").as_string();
 
         lc_config_.keyframe_distance = get_parameter("keyframe_distance").as_double();
         lc_config_.keyframe_angle = get_parameter("keyframe_angle").as_double();
@@ -164,8 +175,6 @@ private:
         // translation starts from the last ICP position + odom delta.
         // ICP then refines ONLY the translation against the map.
         Eigen::Matrix4d guess = Eigen::Matrix4d::Identity();
-        double odom_yaw = std::atan2(
-            latest_odom_pose_(1,0), latest_odom_pose_(0,0));
 
         if (has_guess_seed_) {
             Eigen::Matrix4d odom_delta =
@@ -185,102 +194,142 @@ private:
 
         auto result = kiss_icp_->registerFrame(points, guess);
 
-        double result_yaw = std::atan2(result.pose(1,0), result.pose(0,0));
+        bool map_empty = kiss_icp_->localMap().size() == 0;
+        double overlap_ratio = (result.num_source_points > 0)
+            ? (static_cast<double>(result.num_correspondences) / result.num_source_points)
+            : 0.0;
+        // When blue map already exists: require definite overlay before adding more.
+        double overlap_required = map_empty
+            ? min_overlap_ratio_
+            : std::max(min_overlap_ratio_, min_overlap_ratio_existing_map_);
+        bool aligned = result.converged &&
+            (map_empty ||
+             (result.num_correspondences >= min_align_correspondences_ &&
+              result.fitness_score <= max_align_fitness_ &&
+              overlap_ratio >= overlap_required));
 
-        if (!result.converged) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500,
-                "ICP FAIL: fit=%.4f corr=%d iter=%d odom_yaw=%.1f",
-                result.fitness_score, result.num_correspondences,
-                result.iterations, odom_yaw * 180.0 / M_PI);
-            return;
-        }
+        auto stamp = msg->header.stamp;
 
-        // Reject implausible translation jumps
-        if (has_prev_icp_pose_) {
-            double dtrans = (result.pose.block<3,1>(0,3) - 
-                prev_icp_pose_.block<3,1>(0,3)).norm();
-            if (dtrans > 0.5) {
-                RCLCPP_WARN(get_logger(),
-                    "ICP REJECT: dt=%.3f fit=%.4f corr=%d",
-                    dtrans, result.fitness_score,
-                    result.num_correspondences);
-                return;
+        if (aligned) {
+            if (has_prev_icp_pose_) {
+                double dtrans = (result.pose.block<3,1>(0,3) -
+                    prev_icp_pose_.block<3,1>(0,3)).norm();
+                if (dtrans > 0.5) {
+                    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                        "ICP REJECT jump: dt=%.3f fit=%.4f corr=%d",
+                        dtrans, result.fitness_score, result.num_correspondences);
+                    aligned = false;
+                }
             }
         }
 
+        if (aligned) {
+            kiss_icp_->addFrameToMap(points, result.pose);
+
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
-            "SLAM: pos=(%.2f,%.2f) yaw=%.1f fit=%.4f corr=%d map=%zu",
+            "SLAM aligned: pos=(%.2f,%.2f) yaw=%.1f fit=%.4f corr=%d overlap=%.0f%% map=%zu",
             result.pose(0,3), result.pose(1,3),
-            result_yaw * 180.0 / M_PI,
+            std::atan2(result.pose(1,0), result.pose(0,0)) * 180.0 / M_PI,
             result.fitness_score, result.num_correspondences,
-            kiss_icp_->localMap().size());
+            100.0 * overlap_ratio, kiss_icp_->localMap().size());
 
-        prev_icp_pose_ = result.pose;
-        has_prev_icp_pose_ = true;
-        prev_odom_for_guess_ = latest_odom_pose_;
-        prev_icp_for_guess_ = result.pose;
-        has_guess_seed_ = true;
+            prev_icp_pose_ = result.pose;
+            has_prev_icp_pose_ = true;
+            prev_odom_for_guess_ = latest_odom_pose_;
+            prev_icp_for_guess_ = result.pose;
+            has_guess_seed_ = true;
 
-        // Feed ICP result to EKF
-        Eigen::Matrix<double, 6, 6> lidar_cov =
-            Eigen::Matrix<double, 6, 6>::Identity() * 0.01;
-        lidar_cov(2,2) = 0.05;
-        lidar_cov(5,5) = 0.001;
-        ekf_->updateLidar(result.pose, lidar_cov);
+            Eigen::Matrix<double, 6, 6> lidar_cov =
+                Eigen::Matrix<double, 6, 6>::Identity() * 0.01;
+            lidar_cov(2,2) = 0.05;
+            lidar_cov(5,5) = 0.001;
+            ekf_->updateLidar(result.pose, lidar_cov);
 
-        Eigen::Matrix4d fused = ekf_->getPose();
-        auto stamp = msg->header.stamp;
+            Eigen::Matrix4d fused = ekf_->getPose();
+            Eigen::Matrix4d pose_to_publish = Eigen::Matrix4d::Identity();
+            pose_to_publish.block<3,3>(0,0) = fused.block<3,3>(0,0);
+            pose_to_publish.block<3,1>(0,3) = result.pose.block<3,1>(0,3);
+            pose_to_publish(3,3) = 1.0;
 
-        publishPose(result.pose, stamp);
-        publishOdometry(result.pose, stamp);
-        publishTF(result.pose, latest_odom_pose_, stamp);
-        publishRegisteredPoints(points, result.pose, stamp);
+            publishPose(pose_to_publish, stamp);
+            publishOdometry(pose_to_publish, stamp);
+            publishTF(pose_to_publish, latest_odom_pose_, stamp);
+            publishRegisteredPoints(points, pose_to_publish, stamp);
 
-        // Loop closure
-        if (enable_loop_closure_) {
-            double ts = stamp.sec + stamp.nanosec * 1e-9;
-            if (loop_detector_->addKeyframe(fused, points, ts)) {
-                int kf_id = loop_detector_->numKeyframes() - 1;
-                pose_graph_->addNode(kf_id, fused);
-
-                if (kf_id > 0) {
-                    Eigen::Matrix4d prev = pose_graph_->getNodePose(kf_id - 1);
-                    Eigen::Matrix4d rel = prev.inverse() * fused;
-                    Eigen::Matrix<double, 6, 6> odom_info =
-                        Eigen::Matrix<double, 6, 6>::Identity() * 100.0;
-                    pose_graph_->addEdge(kf_id - 1, kf_id, rel, odom_info);
-                }
-
-                auto loop = loop_detector_->detectLoop();
-                if (loop.has_value()) {
-                    RCLCPP_INFO(get_logger(),
-                        "Loop closure: %d->%d (score=%.4f)",
-                        loop->from_id, loop->to_id, loop->score);
-                    pose_graph_->addEdge(loop->from_id, loop->to_id,
-                        loop->relative_pose, loop->information);
-
-                    if (pose_graph_->optimize(10)) {
-                        Eigen::Matrix4d corrected =
-                            pose_graph_->getNodePose(kf_id);
-                        ekf_->setPose(corrected);
-                        kiss_icp_->setPose(corrected);
-                        prev_icp_for_guess_ = corrected;
-                        prev_odom_for_guess_ = latest_odom_pose_;
-                        has_guess_seed_ = true;
-                        loop_closure_count_++;
+            if (enable_loop_closure_) {
+                double ts = stamp.sec + stamp.nanosec * 1e-9;
+                if (loop_detector_->addKeyframe(fused, points, ts)) {
+                    int kf_id = loop_detector_->numKeyframes() - 1;
+                    pose_graph_->addNode(kf_id, fused);
+                    if (kf_id > 0) {
+                        Eigen::Matrix4d prev = pose_graph_->getNodePose(kf_id - 1);
+                        Eigen::Matrix4d rel = prev.inverse() * fused;
+                        Eigen::Matrix<double, 6, 6> odom_info =
+                            Eigen::Matrix<double, 6, 6>::Identity() * 100.0;
+                        pose_graph_->addEdge(kf_id - 1, kf_id, rel, odom_info);
+                    }
+                    auto loop = loop_detector_->detectLoop();
+                    if (loop.has_value()) {
+                        RCLCPP_INFO(get_logger(),
+                            "Loop closure: %d->%d (score=%.4f)",
+                            loop->from_id, loop->to_id, loop->score);
+                        pose_graph_->addEdge(loop->from_id, loop->to_id,
+                            loop->relative_pose, loop->information);
+                        if (pose_graph_->optimize(10)) {
+                            Eigen::Matrix4d corrected =
+                                pose_graph_->getNodePose(kf_id);
+                            ekf_->setPose(corrected);
+                            kiss_icp_->setPose(corrected);
+                            prev_icp_for_guess_ = corrected;
+                            prev_odom_for_guess_ = latest_odom_pose_;
+                            has_guess_seed_ = true;
+                            loop_closure_count_++;
+                        }
                     }
                 }
             }
+        } else {
+            prev_odom_for_guess_ = latest_odom_pose_;
+
+            Eigen::Matrix4d fused = ekf_->getPose();
+            Eigen::Matrix4d pose_to_publish = Eigen::Matrix4d::Identity();
+            pose_to_publish.block<3,3>(0,0) = fused.block<3,3>(0,0);
+            pose_to_publish.block<3,1>(0,3) = guess.block<3,1>(0,3);
+            pose_to_publish(3,3) = 1.0;
+
+            if (map_build_mode_ == "motion") {
+                kiss_icp_->addFrameToMap(points, pose_to_publish);
+                prev_icp_pose_ = pose_to_publish;
+                has_prev_icp_pose_ = true;
+                prev_icp_for_guess_ = pose_to_publish;
+                has_guess_seed_ = true;
+                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+                    "SLAM motion: adding scan (corr=%d overlap=%.0f%%) map=%zu",
+                    result.num_correspondences, 100.0 * overlap_ratio,
+                    kiss_icp_->localMap().size());
+            } else {
+                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+                    "SLAM SEEKING: corr=%d fit=%.4f overlap=%.0f%% (need overlap>=%.0f%%)",
+                    result.num_correspondences, result.fitness_score,
+                    100.0 * overlap_ratio, 100.0 * overlap_required);
+            }
+
+            publishPose(pose_to_publish, stamp);
+            publishOdometry(pose_to_publish, stamp);
+            publishTF(pose_to_publish, latest_odom_pose_, stamp);
+            publishRegisteredPoints(points, pose_to_publish, stamp);
         }
 
         auto status = g1_msgs::msg::SlamStatus();
         status.header.stamp = stamp;
         status.mapping_active = true;
-        status.localization_valid = result.converged;
+        status.localization_valid = aligned;
         status.map_point_count =
             static_cast<uint32_t>(kiss_icp_->localMap().size());
         status.loop_closure_count = loop_closure_count_;
-        status.odometry_quality = 1.0 - std::min(result.fitness_score, 1.0);
+        status.odometry_quality = aligned
+            ? (1.0 - std::min(result.fitness_score, 1.0))
+            : 0.0;
         status.map_resolution = icp_config_.voxel_size;
         status_pub_->publish(status);
     }
@@ -465,6 +514,11 @@ private:
     double map_publish_rate_ = 1.0;
     bool enable_loop_closure_ = true;
     uint32_t loop_closure_count_ = 0;
+    int min_align_correspondences_ = 50;
+    double max_align_fitness_ = 0.08;
+    double min_overlap_ratio_ = 0.2;
+    double min_overlap_ratio_existing_map_ = 0.45;
+    std::string map_build_mode_ = "strict";
 
     // LiDAR extrinsics (lidar_link → base_link)
     double lidar_offset_x_ = 0.10;

@@ -89,6 +89,7 @@ ICPResult KissICPWrapper::translationOnlyICP(
     ICPResult result;
     result.pose = initial_guess;
 
+    result.num_source_points = static_cast<int>(source.size());
     if (local_map_.size() == 0) {
         result.converged = true;
         return result;
@@ -185,27 +186,31 @@ ICPResult KissICPWrapper::registerFrame(
         if (model_deviations_.size() > 100) {
             model_deviations_.erase(model_deviations_.begin());
         }
-
-        prev_pose_ = current_pose_;
-        has_prev_pose_ = true;
-        current_pose_ = result.pose;
-
         if (!has_moved_ && delta.norm() > config_.min_motion_threshold) {
             has_moved_ = true;
         }
-
-        Eigen::Matrix3d R = current_pose_.block<3,3>(0,0);
-        Eigen::Vector3d t = current_pose_.block<3,1>(0,3);
-        std::vector<Eigen::Vector3d> world_points(preprocessed.size());
-        for (size_t i = 0; i < preprocessed.size(); ++i) {
-            world_points[i] = R * preprocessed[i] + t;
-        }
-        local_map_.addPoints(world_points);
-
-        local_map_.removePointsFarFrom(t, config_.max_range * 3.0);
     }
 
     return result;
+}
+
+void KissICPWrapper::addFrameToMap(const std::vector<Eigen::Vector3d>& frame,
+                                   const Eigen::Matrix4d& pose) {
+    auto preprocessed = preprocessFrame(frame);
+    if (preprocessed.empty()) return;
+
+    prev_pose_ = current_pose_;
+    has_prev_pose_ = true;
+    current_pose_ = pose;
+
+    Eigen::Matrix3d R = pose.block<3,3>(0,0);
+    Eigen::Vector3d t = pose.block<3,1>(0,3);
+    std::vector<Eigen::Vector3d> world_points(preprocessed.size());
+    for (size_t i = 0; i < preprocessed.size(); ++i) {
+        world_points[i] = R * preprocessed[i] + t;
+    }
+    local_map_.addPoints(world_points);
+    local_map_.removePointsFarFrom(t, config_.max_range * 3.0);
 }
 
 double KissICPWrapper::computeAdaptiveThreshold() {

@@ -18,9 +18,13 @@ VoxelKey VoxelHashMap::toKey(const Eigen::Vector3d& point) const {
 void VoxelHashMap::addPoints(const std::vector<Eigen::Vector3d>& points) {
     for (const auto& p : points) {
         auto key = toKey(p);
-        auto& voxel = map_[key];
-        if (voxel.size() < max_points_per_voxel_) {
-            voxel.push_back(p);
+        auto it = map_.find(key);
+        if (it == map_.end()) {
+            map_[key] = {p, 1};
+        } else {
+            size_t n = it->second.second + 1;
+            it->second.first = (it->second.first * (n - 1) + p) / static_cast<double>(n);
+            it->second.second = n;
         }
     }
 }
@@ -43,10 +47,9 @@ std::vector<Eigen::Vector3d> VoxelHashMap::getPointsNear(
                 VoxelKey key{center_key.x + dx, center_key.y + dy, center_key.z + dz};
                 auto it = map_.find(key);
                 if (it != map_.end()) {
-                    for (const auto& p : it->second) {
-                        if ((p - query).squaredNorm() <= radius_sq) {
-                            result.push_back(p);
-                        }
+                    const Eigen::Vector3d& centroid = it->second.first;
+                    if ((centroid - query).squaredNorm() <= radius_sq) {
+                        result.push_back(centroid);
                     }
                 }
             }
@@ -57,18 +60,16 @@ std::vector<Eigen::Vector3d> VoxelHashMap::getPointsNear(
 
 std::vector<Eigen::Vector3d> VoxelHashMap::getAllPoints() const {
     std::vector<Eigen::Vector3d> result;
-    for (const auto& [key, points] : map_) {
-        result.insert(result.end(), points.begin(), points.end());
+    result.reserve(map_.size());
+    for (const auto& [key, entry] : map_) {
+        (void)key;
+        result.push_back(entry.first);
     }
     return result;
 }
 
 size_t VoxelHashMap::size() const {
-    size_t total = 0;
-    for (const auto& [key, points] : map_) {
-        total += points.size();
-    }
-    return total;
+    return map_.size();
 }
 
 void VoxelHashMap::removePointsFarFrom(const Eigen::Vector3d& center, double max_distance) {

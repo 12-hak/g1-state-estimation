@@ -1,6 +1,7 @@
 slam_node:
   ros__parameters:
-    voxel_size: 0.5
+    # Finer voxel = higher accuracy map (0.2–0.3 typical for indoor)
+    voxel_size: 0.25
     max_range: 15.0
     min_range: 0.3
     max_icp_iterations: 50
@@ -12,6 +13,14 @@ slam_node:
     keyframe_angle: 0.5
     loop_search_radius: 15.0
     enable_loop_closure: true
+    # Only add to map + show "Loc: VALID" when scan is firmly locked to map.
+    min_align_correspondences: 100
+    max_align_fitness: 0.015
+    min_overlap_ratio: 0.40
+    # When blue map already exists: require definite overlay before adding more blue.
+    min_overlap_ratio_existing_map: 0.45
+    # "strict" = only add to map when scan is aligned (can lose loc). "motion" = always add from odom pose so blue map grows from movement/over-scan.
+    map_build_mode: "motion"
 
 occupancy_grid_node:
   ros__parameters:
