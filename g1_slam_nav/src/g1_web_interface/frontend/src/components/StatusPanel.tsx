@@ -41,6 +41,14 @@ export const StatusPanel: React.FC<Props> = ({ pose, status, connected }) => {
             <span style={{ color: '#00ff41' }}>VALID</span> :
             <span style={{ color: '#ff4444' }}>LOST</span>}
           </div>
+          <div style={{
+            fontSize: 12,
+            fontWeight: 'bold',
+            color: status.localization_valid ? '#00ff41' : '#ff6666',
+            marginTop: 2,
+          }}>
+            {status.localization_valid ? '✓ ALIGNED (green)' : '◌ SEEKING (red)'}
+          </div>
           <div>Points: {(status.map_points ?? 0).toLocaleString()}</div>
           <div>Loops: {status.loop_closures ?? 0}</div>
           <div>Quality: {((status.quality ?? 0) * 100).toFixed(0)}%</div>

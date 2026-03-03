@@ -79,7 +79,9 @@ class WebBridgeNode(Node):
             self.get_logger().error('Could not find frontend/index.html in share/ or src/ directories')
 
         self.declare_parameter("point_size", 2.0)
+        self.declare_parameter("use_point_lio", False)
         self.point_size = self.get_parameter("point_size").value
+        self._use_point_lio = self.get_parameter("use_point_lio").value
 
         # State cache
         self._pose = None
@@ -89,6 +91,7 @@ class WebBridgeNode(Node):
         self._slam_map_points = []
         self._max_map_points = 8000
         self._planned_path = None
+        self._trajectory_path = None  # Point-LIO /path (path so far)
         self._clients = set()
         self._lock = threading.Lock()
         self._loop = None
@@ -106,13 +109,21 @@ class WebBridgeNode(Node):
         map_qos = QoSProfile(depth=1,
                               durability=DurabilityPolicy.TRANSIENT_LOCAL,
                               reliability=ReliabilityPolicy.RELIABLE)
+        sensor_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-        # Subscribers
-        self.create_subscription(PoseStamped, 'slam/pose', self._pose_cb, 10)
+        # Subscribers: KISS-ICP (default) or Point-LIO topics
+        if self._use_point_lio:
+            self.create_subscription(Odometry, 'aft_mapped_to_init', self._odom_cb, 10)
+            self.create_subscription(sensor_msgs.msg.PointCloud2, 'cloud_registered', self.pointCloudCallback, sensor_qos)
+            self.create_subscription(sensor_msgs.msg.PointCloud2, 'Laser_map', self._slam_map_cb, 2)
+            self.create_subscription(Path, 'path', self._trajectory_path_cb, 10)
+            self.get_logger().info('Web bridge: Point-LIO mode (Odometry, cloud_registered, Laser_map, path)')
+        else:
+            self.create_subscription(PoseStamped, 'slam/pose', self._pose_cb, 10)
+            self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/registered_points', self.pointCloudCallback, 5)
+            self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/map', self._slam_map_cb, 2)
         self.create_subscription(OccupancyGrid, 'map', self._map_cb, map_qos)
         self.create_subscription(SlamStatus, 'slam/status', self._status_cb, 10)
-        self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/registered_points', self.pointCloudCallback, 5)
-        self.create_subscription(sensor_msgs.msg.PointCloud2, 'slam/map', self._slam_map_cb, 2)
         self.create_subscription(Path, 'nav/planned_path', self._path_cb, 10)
 
         # Publishers
@@ -133,6 +144,36 @@ class WebBridgeNode(Node):
 
         self.get_logger().info(
             f'Web bridge: WS={self.ws_port}, HTTP={self.http_port}')
+
+    def _odom_cb(self, msg: Odometry):
+        """Pose from Point-LIO Odometry (use_point_lio mode)."""
+        q = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        with self._lock:
+            now_s = time.monotonic()
+            if self._last_pose_wall_s is not None:
+                dt = max(1e-3, now_s - self._last_pose_wall_s)
+                self._pose_hz = 1.0 / dt
+            self._last_pose_wall_s = now_s
+            self._pose_seq += 1
+            self._pose = {
+                'x': msg.pose.pose.position.x,
+                'y': msg.pose.pose.position.y,
+                'z': msg.pose.pose.position.z,
+                'yaw': yaw,
+            }
+            if self._slam_status is None:
+                self._slam_status = {'mapping_active': True, 'localization_valid': True, 'map_points': 0, 'loop_closures': 0, 'quality': 0.9}
+
+    def _trajectory_path_cb(self, msg: Path):
+        """Point-LIO trajectory (path so far)."""
+        points = []
+        for pose in msg.poses:
+            points.append([pose.pose.position.x, pose.pose.position.y])
+        with self._lock:
+            self._trajectory_path = points
 
     def _pose_cb(self, msg: PoseStamped):
         q = msg.pose.orientation
@@ -202,12 +243,18 @@ class WebBridgeNode(Node):
 
         x_off = offsets['x']
         y_off = offsets['y']
+        z_off = offsets.get('z', y_off + 4)
+        intensity_off = None
+        if 'intensity' in offsets:
+            intensity_off = offsets['intensity']
         data = msg.data
         step = msg.point_step
 
         arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
         x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
         y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
+        z_pts = arr[:, z_off:z_off+4].view(np.float32).flatten() if 'z' in offsets else np.zeros_like(x_pts)
+        i_pts = arr[:, intensity_off:intensity_off+4].view(np.float32).flatten() if intensity_off is not None else None
 
         stride = max(1, len(x_pts) // 800)
         scan_points = []
@@ -223,7 +270,11 @@ class WebBridgeNode(Node):
                 x, y = float(x_pts[i]), float(y_pts[i])
                 if np.isnan(x) or np.isnan(y):
                     continue
-                scan_points.append([x, y])
+                z = float(z_pts[i]) if i < len(z_pts) else 0.0
+                pt = [x, y, z]
+                if i_pts is not None and i < len(i_pts):
+                    pt.append(float(i_pts[i]))
+                scan_points.append(pt)
 
             self._current_scan = scan_points
             payload = {
@@ -245,6 +296,8 @@ class WebBridgeNode(Node):
 
         x_off = offsets['x']
         y_off = offsets['y']
+        z_off = offsets.get('z', y_off + 4)
+        intensity_off = offsets.get('intensity')
         data = msg.data
         step = msg.point_step
         if step <= 0:
@@ -253,6 +306,8 @@ class WebBridgeNode(Node):
         arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
         x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
         y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
+        z_pts = arr[:, z_off:z_off+4].view(np.float32).flatten() if 'z' in offsets else np.zeros_like(x_pts)
+        i_pts = arr[:, intensity_off:intensity_off+4].view(np.float32).flatten() if intensity_off is not None else None
 
         stride = max(1, len(x_pts) // self._max_map_points)
         points = []
@@ -260,7 +315,11 @@ class WebBridgeNode(Node):
             x, y = float(x_pts[i]), float(y_pts[i])
             if np.isnan(x) or np.isnan(y):
                 continue
-            points.append([x, y])
+            z = float(z_pts[i]) if i < len(z_pts) else 0.0
+            pt = [x, y, z]
+            if i_pts is not None and i < len(i_pts):
+                pt.append(float(i_pts[i]))
+            points.append(pt)
 
         with self._lock:
             self._slam_map_points = points
@@ -302,11 +361,16 @@ class WebBridgeNode(Node):
         if self._loop is None:
             return
         with self._lock:
-            if self._map_grid is None:
+            if self._map_grid is not None:
+                payload = {'type': 'map', **self._map_grid}
+            elif self._use_point_lio and (self._planned_path or self._trajectory_path):
+                payload = {'type': 'map', 'width': 1, 'height': 1, 'resolution': 1.0, 'origin_x': 0.0, 'origin_y': 0.0, 'data': [-1]}
+            else:
                 return
-            payload = {'type': 'map', **self._map_grid}
             if self._planned_path:
                 payload['path'] = self._planned_path
+            if self._trajectory_path:
+                payload['trajectory'] = self._trajectory_path
             data = json.dumps(payload)
         asyncio.run_coroutine_threadsafe(self._send_all(data), self._loop)
 
