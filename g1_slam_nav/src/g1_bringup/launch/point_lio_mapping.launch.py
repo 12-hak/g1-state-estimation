@@ -53,6 +53,45 @@ def generate_launch_description():
         'rviz', default_value='false',
         description='Launch RViz (use point_lio rviz config if true).'
     )
+    use_web_arg = DeclareLaunchArgument(
+        'use_web', default_value='true',
+        description='Launch web interface (pointcloud, path, trajectory) at http://<robot-ip>:8080'
+    )
+    use_occ_grid_arg = DeclareLaunchArgument(
+        'use_occ_grid', default_value='false',
+        description='Run Point-LIO occupancy grid node (Laser_map -> /map for Nav2).'
+    )
+
+    point_lio_occ_grid_node = Node(
+        package='g1_slam',
+        executable='point_lio_occupancy_grid_node',
+        name='point_lio_occupancy_grid_node',
+        output='screen',
+        parameters=[{
+            'map_topic': 'Laser_map',
+            'odom_topic': 'aft_mapped_to_init',
+            'resolution': 0.05,
+            'width': 200.0,
+            'height': 200.0,
+            'map_frame': 'camera_init',
+        }],
+        condition=IfCondition(LaunchConfiguration('use_occ_grid')),
+    )
+
+    point_lio_map_manager_node = Node(
+        package='g1_slam',
+        executable='map_manager_node',
+        name='map_manager_node',
+        output='screen',
+        parameters=[{
+            'map_directory': '/home/unitree/maps',
+            'map_frame': 'camera_init',
+            'map_topic': 'Laser_map',
+            'grid_topic': 'map',
+            'map_pub_topic': 'loaded_map',
+            'grid_pub_topic': 'map',
+        }],
+    )
 
     rviz_node = Node(
         package='rviz2',
@@ -65,8 +104,29 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
+    web_bridge_node = Node(
+        package='g1_web_interface',
+        executable='web_bridge_node',
+        name='web_bridge',
+        output='screen',
+        parameters=[{
+            'ws_port': 9090,
+            'http_port': 8080,
+            'map_downsample': 4,
+            'map_publish_rate': 1.0,
+            'pose_publish_rate': 10.0,
+            'use_point_lio': True,
+        }],
+        condition=IfCondition(LaunchConfiguration('use_web')),
+    )
+
     return LaunchDescription([
         rviz_arg,
+        use_web_arg,
+        use_occ_grid_arg,
         laser_mapping_node,
+        point_lio_occ_grid_node,
+        point_lio_map_manager_node,
         rviz_node,
+        web_bridge_node,
     ])

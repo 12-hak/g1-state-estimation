@@ -62,6 +62,12 @@ if(pcl_conversions_FOUND AND pcl_ros_FOUND AND PCL_FOUND)
     rclcpp sensor_msgs nav_msgs geometry_msgs pcl_conversions pcl_ros
   )
 
+  # --- Point-LIO Occupancy Grid Node (Laser_map + aft_mapped_to_init -> /map) ---
+  add_executable(point_lio_occupancy_grid_node src/point_lio_occupancy_grid_node.cpp)
+  ament_target_dependencies(point_lio_occupancy_grid_node
+    rclcpp sensor_msgs nav_msgs geometry_msgs pcl_conversions pcl_ros
+  )
+
   # --- Map Manager Node ---
   add_executable(map_manager_node src/map_manager_node.cpp)
   target_link_libraries(map_manager_node g1_slam_core)
@@ -72,6 +78,7 @@ if(pcl_conversions_FOUND AND pcl_ros_FOUND AND PCL_FOUND)
   install(TARGETS
     slam_node
     occupancy_grid_node
+    point_lio_occupancy_grid_node
     map_manager_node
     DESTINATION lib/${PROJECT_NAME}
   )

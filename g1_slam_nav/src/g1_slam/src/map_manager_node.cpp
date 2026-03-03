@@ -22,20 +22,28 @@ public:
 
         declare_parameter("map_directory", "/home/unitree/maps");
         declare_parameter("map_frame", "map");
+        declare_parameter("map_topic", "slam/map");
+        declare_parameter("grid_topic", "map");
+        declare_parameter("map_pub_topic", "slam/map");
+        declare_parameter("grid_pub_topic", "map");
 
         map_directory_ = get_parameter("map_directory").as_string();
         map_frame_ = get_parameter("map_frame").as_string();
+        std::string map_topic = get_parameter("map_topic").as_string();
+        std::string grid_topic = get_parameter("grid_topic").as_string();
+        std::string map_pub_topic = get_parameter("map_pub_topic").as_string();
+        std::string grid_pub_topic = get_parameter("grid_pub_topic").as_string();
 
         map_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-            "slam/map", 1,
+            map_topic, 1,
             std::bind(&MapManagerNode::mapCallback, this, std::placeholders::_1));
 
         grid_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
-            "map", rclcpp::QoS(1).transient_local(),
+            grid_topic, rclcpp::QoS(1).transient_local(),
             std::bind(&MapManagerNode::gridCallback, this, std::placeholders::_1));
 
-        map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("slam/map", rclcpp::QoS(1).transient_local());
-        grid_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("map", rclcpp::QoS(1).transient_local());
+        map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(map_pub_topic, rclcpp::QoS(1).transient_local());
+        grid_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(grid_pub_topic, rclcpp::QoS(1).transient_local());
 
         save_srv_ = create_service<g1_msgs::srv::SaveMap>(
             "save_map",

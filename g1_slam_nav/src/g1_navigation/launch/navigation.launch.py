@@ -13,23 +13,27 @@ def generate_launch_description():
     nav_command_path = os.path.join(install_prefix, 'lib', 'g1_navigation', 'nav_command_node')
     have_nav_command = os.path.isfile(nav_command_path)
 
+    default_params = os.path.join(g1_nav_dir, 'params', 'nav2_params.yaml')
     ld = [
         DeclareLaunchArgument('map_yaml_file', default_value='',
                               description='Path to map YAML for localization mode'),
+        DeclareLaunchArgument('params_file', default_value=default_params,
+                              description='Nav2 params file (use nav2_params_point_lio.yaml for Point-LIO)'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('map_frame', default_value='map',
+                              description='Global/map frame for nav_command_node (use camera_init for Point-LIO)'),
     ]
 
     try:
         nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-        nav2_params = os.path.join(g1_nav_dir, 'params', 'nav2_params.yaml')
         ld.append(
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(nav2_bringup_dir, 'launch', 'navigation_launch.py')
                 ),
                 launch_arguments={
-                    'params_file': nav2_params,
+                    'params_file': LaunchConfiguration('params_file'),
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'autostart': LaunchConfiguration('autostart'),
                 }.items(),
@@ -45,7 +49,7 @@ def generate_launch_description():
                 executable='nav_command_node',
                 name='nav_command_node',
                 output='screen',
-                parameters=[{'map_frame': 'map'}],
+                parameters=[{'map_frame': LaunchConfiguration('map_frame')}],
             )
         )
     else:
