@@ -16,8 +16,8 @@ def generate_launch_description():
             name='web_bridge',
             output='screen',
             parameters=[{
-                'ws_port': 9090,
-                'http_port': 8080,
+                'ws_port': LaunchConfiguration('ws_port'),
+                'http_port': LaunchConfiguration('http_port'),
                 'frontend_path': LaunchConfiguration('frontend_path'),
                 'map_downsample': 4,
                 'map_publish_rate': 1.0,
