@@ -10,12 +10,13 @@ Usage:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, TextSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution
+from ament_index_python.packages import get_package_prefix
 import os
 
 
@@ -47,6 +48,8 @@ def generate_launch_description():
         name='laserMapping',
         output='screen',
         parameters=laser_mapping_params,
+        sigterm_timeout=TextSubstitution(text='30'),
+        sigkill_timeout=TextSubstitution(text='10'),
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -61,6 +64,30 @@ def generate_launch_description():
         'use_occ_grid', default_value='false',
         description='Run Point-LIO occupancy grid node (Laser_map -> /map for Nav2).'
     )
+
+    prefix = get_package_prefix('g1_bringup')
+    odom_script = os.path.join(prefix, 'lib', 'g1_bringup', 'point_lio_odom_to_tf.py')
+    if not os.path.isfile(odom_script):
+        odom_script = os.path.join(prefix, 'libexec', 'g1_bringup', 'point_lio_odom_to_tf.py')
+    use_occ = LaunchConfiguration('use_occ_grid')
+    if os.path.isfile(odom_script):
+        odom_to_tf_node = Node(
+            package=None,
+            executable=odom_script,
+            name='point_lio_odom_to_tf',
+            output='screen',
+            parameters=[{
+                'odom_topic': 'aft_mapped_to_init',
+                'map_frame': 'camera_init',
+                'base_frame': 'base_link',
+            }],
+            condition=IfCondition(use_occ),
+        )
+    else:
+        odom_to_tf_node = LogInfo(
+            msg='point_lio_odom_to_tf.py not installed (run: colcon build --packages-select g1_bringup)',
+            condition=IfCondition(use_occ),
+        )
 
     point_lio_occ_grid_node = Node(
         package='g1_slam',
@@ -125,6 +152,7 @@ def generate_launch_description():
         use_web_arg,
         use_occ_grid_arg,
         laser_mapping_node,
+        odom_to_tf_node,
         point_lio_occ_grid_node,
         point_lio_map_manager_node,
         rviz_node,

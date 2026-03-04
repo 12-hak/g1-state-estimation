@@ -11,6 +11,7 @@ import math
 import struct
 import os
 import time
+import traceback
 import numpy as np
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from functools import partial
@@ -25,11 +26,10 @@ from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from g1_msgs.msg import SlamStatus, NavigationCommand, WaypointList
 from g1_msgs.srv import SaveMap, LoadMap
 
+import websockets
 try:
-    import websockets
     from websockets.asyncio.server import serve as ws_serve
 except ImportError:
-    import websockets
     ws_serve = websockets.serve
 
 
@@ -92,7 +92,7 @@ class WebBridgeNode(Node):
         self._max_map_points = 8000
         self._planned_path = None
         self._trajectory_path = None  # Point-LIO /path (path so far)
-        self._clients = set()
+        self._ws_clients = set()
         self._lock = threading.Lock()
         self._loop = None
         self._pose_seq = 0
@@ -251,10 +251,12 @@ class WebBridgeNode(Node):
         step = msg.point_step
 
         arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
-        x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
-        y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
-        z_pts = arr[:, z_off:z_off+4].view(np.float32).flatten() if 'z' in offsets else np.zeros_like(x_pts)
-        i_pts = arr[:, intensity_off:intensity_off+4].view(np.float32).flatten() if intensity_off is not None else None
+        def as_f32(s):
+            return np.ascontiguousarray(s).view(np.float32).flatten()
+        x_pts = as_f32(arr[:, x_off:x_off+4])
+        y_pts = as_f32(arr[:, y_off:y_off+4])
+        z_pts = as_f32(arr[:, z_off:z_off+4]) if 'z' in offsets else np.zeros_like(x_pts)
+        i_pts = as_f32(arr[:, intensity_off:intensity_off+4]) if intensity_off is not None else None
 
         stride = max(1, len(x_pts) // 800)
         scan_points = []
@@ -304,10 +306,12 @@ class WebBridgeNode(Node):
             return
 
         arr = np.frombuffer(data, dtype=np.uint8).reshape(-1, step)
-        x_pts = arr[:, x_off:x_off+4].view(np.float32).flatten()
-        y_pts = arr[:, y_off:y_off+4].view(np.float32).flatten()
-        z_pts = arr[:, z_off:z_off+4].view(np.float32).flatten() if 'z' in offsets else np.zeros_like(x_pts)
-        i_pts = arr[:, intensity_off:intensity_off+4].view(np.float32).flatten() if intensity_off is not None else None
+        def as_f32(s):
+            return np.ascontiguousarray(s).view(np.float32).flatten()
+        x_pts = as_f32(arr[:, x_off:x_off+4])
+        y_pts = as_f32(arr[:, y_off:y_off+4])
+        z_pts = as_f32(arr[:, z_off:z_off+4]) if 'z' in offsets else np.zeros_like(x_pts)
+        i_pts = as_f32(arr[:, intensity_off:intensity_off+4]) if intensity_off is not None else None
 
         stride = max(1, len(x_pts) // self._max_map_points)
         points = []
@@ -376,24 +380,26 @@ class WebBridgeNode(Node):
 
     async def _send_all(self, data: str):
         dead = set()
-        for ws in list(self._clients):
+        for ws in list(self._ws_clients):
             try:
                 await ws.send(data)
             except Exception:
                 dead.add(ws)
-        self._clients -= dead
+        self._ws_clients -= dead
 
-    async def _handle_ws(self, websocket):
-        self._clients.add(websocket)
-        self.get_logger().info(f'Client connected ({len(self._clients)} total)')
+    async def _handle_ws(self, websocket, *_args):
+        self._ws_clients.add(websocket)
+        self.get_logger().info(f'Client connected ({len(self._ws_clients)} total)')
         try:
             async for message in websocket:
                 await self._process_command(message)
         except websockets.exceptions.ConnectionClosed:
             pass
+        except Exception as e:
+            self.get_logger().error(f'WebSocket error: {e}')
         finally:
-            self._clients.discard(websocket)
-            self.get_logger().info(f'Client disconnected ({len(self._clients)} total)')
+            self._ws_clients.discard(websocket)
+            self.get_logger().info(f'Client disconnected ({len(self._ws_clients)} total)')
 
     async def _process_command(self, raw: str):
         try:
@@ -489,12 +495,16 @@ class WebBridgeNode(Node):
         # WebSocket server in asyncio event loop (background thread)
         ws_thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         ws_thread.start()
+        time.sleep(1.0)
 
     def _run_ws_loop(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
-        loop.run_until_complete(self._run_ws_server())
+        try:
+            loop.run_until_complete(self._run_ws_server())
+        except Exception:
+            self.get_logger().error("WebSocket loop crashed:\n" + traceback.format_exc())
 
 
 def main(args=None):

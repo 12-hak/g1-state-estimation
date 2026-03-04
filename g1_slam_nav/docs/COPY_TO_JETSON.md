@@ -204,17 +204,18 @@ To keep localization (Point-LIO) fast and avoid Nav2/planning load on the robot,
    ```bash
    ros2 launch g1_bringup point_lio_mapping.launch.py use_occ_grid:=true use_web:=false
    ```
-   This runs: Point-LIO, `point_lio_occupancy_grid_node` (Laser_map → /map), `map_manager_node` (save_map/load_map from Laser_map + /map). Set `use_web:=true` if you also want the web UI on the Jetson.
+   This runs: Point-LIO, `point_lio_occupancy_grid_node` (Laser_map → /map), `map_manager_node`, and **point_lio_odom_to_tf** (subscribes to `aft_mapped_to_init`, publishes TF `camera_init` → `base_link`) so Nav2 on the client sees a single TF tree. Set `use_web:=true` if you also want the web UI on the Jetson.
 
 4. Ensure the second machine can reach the Jetson’s ROS 2 topics (same network, same `ROS_DOMAIN_ID` if set).
 
 **On the second machine (PC or other Jetson):**
 
 1. Install and build this workspace (including `g1_slam` for the occupancy grid node if you ever run it there; for the client you need at least `g1_navigation`, `g1_web_interface`, and Nav2).
-2. Set `ROS_DOMAIN_ID` to match the Jetson (if used).
-3. Launch Nav2 + web for waypoint navigation:
+2. **Python version:** ROS 2 Humble uses Python 3.10. The workspace must be built with the same Python so that `g1_msgs` type support loads. If you use conda/pyenv or have Python 3.12 as default, deactivate it before building and running (`conda deactivate`, `unset LD_LIBRARY_PATH`). Check with `python3 --version` (should be 3.10) and `which python3` (e.g. `/usr/bin/python3`). If you previously built with a different Python, clean and rebuild: `rm -rf build/g1_msgs install/g1_msgs build/g1_web_interface install/g1_web_interface` then `colcon build --symlink-install ...`.
+3. Set `ROS_DOMAIN_ID` to match the Jetson (if used).
+4. Launch Nav2 + web for waypoint navigation:
    ```bash
-   source /opt/ros/foxy/setup.bash
+   source /opt/ros/humble/setup.bash   # client PC is typically Ubuntu 22.04 + Humble
    source /path/to/g1_slam_nav/install/setup.bash
    ros2 launch g1_bringup point_lio_navigation.launch.py
    ```

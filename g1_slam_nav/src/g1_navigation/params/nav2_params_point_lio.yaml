@@ -1,10 +1,11 @@
 # Nav2 parameters for Point-LIO: use camera_init as global frame (same as /map from point_lio_occupancy_grid_node).
-# Run this on the same machine as Point-LIO or on a second client; ensure /map and tf (camera_init -> base_link) are available.
+# Run this on the same machine as Point-LIO or on a second client; ensure /map and tf (camera_init -> aft_mapped) are available.
+# Point-LIO publishes camera_init -> aft_mapped; use aft_mapped as robot_base_frame.
 
 bt_navigator:
   ros__parameters:
     global_frame: camera_init
-    robot_base_frame: base_link
+    robot_base_frame: aft_mapped
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
@@ -133,7 +134,7 @@ local_costmap:
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: camera_init
-      robot_base_frame: base_link
+      robot_base_frame: aft_mapped
       rolling_window: true
       width: 5
       height: 5
@@ -165,7 +166,7 @@ global_costmap:
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: camera_init
-      robot_base_frame: base_link
+      robot_base_frame: aft_mapped
       robot_radius: 0.25
       resolution: 0.05
       track_unknown_space: true

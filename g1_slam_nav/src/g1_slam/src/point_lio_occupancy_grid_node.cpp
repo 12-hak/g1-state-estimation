@@ -35,6 +35,7 @@ public:
         declare_parameter("publish_rate", 1.0);
         declare_parameter("free_threshold", 0.3);
         declare_parameter("occupied_threshold", 0.50);
+        declare_parameter("rolling_window", true);
 
         std::string map_topic = get_parameter("map_topic").as_string();
         std::string odom_topic = get_parameter("odom_topic").as_string();
@@ -46,6 +47,7 @@ public:
         map_frame_ = get_parameter("map_frame").as_string();
         free_threshold_ = get_parameter("free_threshold").as_double();
         occupied_threshold_ = get_parameter("occupied_threshold").as_double();
+        rolling_window_ = get_parameter("rolling_window").as_bool();
 
         grid_width_ = static_cast<int>(width_ / resolution_);
         grid_height_ = static_cast<int>(height_ / resolution_);
@@ -86,6 +88,13 @@ private:
         pcl::PointCloud<pcl::PointXYZ> cloud;
         pcl::fromROSMsg(*msg, cloud);
 
+        if (rolling_window_) {
+            std::lock_guard<std::mutex> lock(grid_mutex_);
+            last_cloud_ = cloud;
+            map_updated_ = true;
+            return;
+        }
+
         std::lock_guard<std::mutex> lock(grid_mutex_);
 
         for (const auto& p : cloud) {
@@ -100,25 +109,74 @@ private:
             log_odds_[idx] = std::min(log_odds_[idx] + 1.5, 10.0);
         }
 
+        if (!rolling_window_) {
+            double rx, ry;
+            {
+                std::lock_guard<std::mutex> lock2(pose_mutex_);
+                rx = robot_x_;
+                ry = robot_y_;
+            }
+
+            int robot_gx = static_cast<int>((rx - origin_x_) / resolution_);
+            int robot_gy = static_cast<int>((ry - origin_y_) / resolution_);
+
+            int pt_idx = 0;
+            for (const auto& p : cloud) {
+                pt_idx++;
+                if (pt_idx % 4 != 0) continue;
+                if (p.z < min_obstacle_height_ || p.z > max_obstacle_height_) continue;
+
+                int end_gx = static_cast<int>((p.x - origin_x_) / resolution_);
+                int end_gy = static_cast<int>((p.y - origin_y_) / resolution_);
+
+                int dx = std::abs(end_gx - robot_gx);
+                int dy = std::abs(end_gy - robot_gy);
+                int sx = (robot_gx < end_gx) ? 1 : -1;
+                int sy = (robot_gy < end_gy) ? 1 : -1;
+                int err = dx - dy;
+                int cx = robot_gx, cy = robot_gy;
+                int max_steps = dx + dy;
+                for (int step = 0; step < max_steps - 1; ++step) {
+                    if (cx >= 0 && cx < grid_width_ && cy >= 0 && cy < grid_height_) {
+                        int idx = cy * grid_width_ + cx;
+                        log_odds_[idx] = std::max(log_odds_[idx] - 0.3, -3.0);
+                    }
+                    int e2 = 2 * err;
+                    if (e2 > -dy) { err -= dy; cx += sx; }
+                    if (e2 < dx)  { err += dx; cy += sy; }
+                }
+            }
+        }
+
+        map_updated_ = true;
+    }
+
+    void buildGridFromCloud(const pcl::PointCloud<pcl::PointXYZ>& cloud, double ox, double oy) {
+        std::fill(log_odds_.begin(), log_odds_.end(), 0.0);
+        for (const auto& p : cloud) {
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+            if (p.z < min_obstacle_height_ || p.z > max_obstacle_height_) continue;
+            int gx = static_cast<int>((p.x - ox) / resolution_);
+            int gy = static_cast<int>((p.y - oy) / resolution_);
+            if (gx < 0 || gx >= static_cast<int>(grid_width_) || gy < 0 || gy >= static_cast<int>(grid_height_)) continue;
+            int idx = gy * grid_width_ + gx;
+            log_odds_[idx] = std::min(log_odds_[idx] + 1.5, 10.0);
+        }
         double rx, ry;
         {
             std::lock_guard<std::mutex> lock2(pose_mutex_);
             rx = robot_x_;
             ry = robot_y_;
         }
-
-        int robot_gx = static_cast<int>((rx - origin_x_) / resolution_);
-        int robot_gy = static_cast<int>((ry - origin_y_) / resolution_);
-
+        int robot_gx = static_cast<int>((rx - ox) / resolution_);
+        int robot_gy = static_cast<int>((ry - oy) / resolution_);
         int pt_idx = 0;
         for (const auto& p : cloud) {
             pt_idx++;
             if (pt_idx % 4 != 0) continue;
             if (p.z < min_obstacle_height_ || p.z > max_obstacle_height_) continue;
-
-            int end_gx = static_cast<int>((p.x - origin_x_) / resolution_);
-            int end_gy = static_cast<int>((p.y - origin_y_) / resolution_);
-
+            int end_gx = static_cast<int>((p.x - ox) / resolution_);
+            int end_gy = static_cast<int>((p.y - oy) / resolution_);
             int dx = std::abs(end_gx - robot_gx);
             int dy = std::abs(end_gy - robot_gy);
             int sx = (robot_gx < end_gx) ? 1 : -1;
@@ -127,7 +185,7 @@ private:
             int cx = robot_gx, cy = robot_gy;
             int max_steps = dx + dy;
             for (int step = 0; step < max_steps - 1; ++step) {
-                if (cx >= 0 && cx < grid_width_ && cy >= 0 && cy < grid_height_) {
+                if (cx >= 0 && cx < static_cast<int>(grid_width_) && cy >= 0 && cy < static_cast<int>(grid_height_)) {
                     int idx = cy * grid_width_ + cx;
                     log_odds_[idx] = std::max(log_odds_[idx] - 0.3, -3.0);
                 }
@@ -136,13 +194,25 @@ private:
                 if (e2 < dx)  { err += dx; cy += sy; }
             }
         }
-
-        map_updated_ = true;
     }
 
     void publishGrid() {
         std::lock_guard<std::mutex> lock(grid_mutex_);
         if (!map_updated_) return;
+        if (rolling_window_ && last_cloud_.empty()) return;
+
+        double pub_origin_x = origin_x_, pub_origin_y = origin_y_;
+        if (rolling_window_) {
+            double rx, ry;
+            {
+                std::lock_guard<std::mutex> lock2(pose_mutex_);
+                rx = robot_x_;
+                ry = robot_y_;
+            }
+            pub_origin_x = rx - width_ / 2.0;
+            pub_origin_y = ry - height_ / 2.0;
+            buildGridFromCloud(last_cloud_, pub_origin_x, pub_origin_y);
+        }
 
         auto msg = nav_msgs::msg::OccupancyGrid();
         msg.header.stamp = now();
@@ -150,8 +220,8 @@ private:
         msg.info.resolution = resolution_;
         msg.info.width = grid_width_;
         msg.info.height = grid_height_;
-        msg.info.origin.position.x = origin_x_;
-        msg.info.origin.position.y = origin_y_;
+        msg.info.origin.position.x = pub_origin_x;
+        msg.info.origin.position.y = pub_origin_y;
         msg.info.origin.orientation.w = 1.0;
         msg.data.resize(grid_width_ * grid_height_);
         for (size_t i = 0; i < log_odds_.size(); ++i) {
@@ -175,6 +245,8 @@ private:
     std::mutex grid_mutex_, pose_mutex_;
     double robot_x_ = 0.0, robot_y_ = 0.0;
     bool map_updated_ = false;
+    bool rolling_window_ = true;
+    pcl::PointCloud<pcl::PointXYZ> last_cloud_;
     double resolution_, width_, height_;
     uint32_t grid_width_, grid_height_;
     double origin_x_, origin_y_;

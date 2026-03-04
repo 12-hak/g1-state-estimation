@@ -31,8 +31,13 @@ if(NOT CYCLONEDDS_PATH)
   set(CYCLONEDDS_PATH "/opt/unitree_robotics")
 endif()
 
-# Livox SDK path
+# Livox SDK path (optional: only build livox_bridge_node when found)
 set(LIVOX_SDK_PATH "$ENV{LIVOX_SDK_PATH}" CACHE PATH "Path to Livox SDK2")
+if(LIVOX_SDK_PATH)
+  find_path(LIVOX_INCLUDE_DIR NAMES livox_lidar_def.h PATHS "${LIVOX_SDK_PATH}/include" NO_DEFAULT_PATH)
+  find_library(LIVOX_LIB NAMES livox_lidar_sdk_shared PATHS "${LIVOX_SDK_PATH}/lib" NO_DEFAULT_PATH)
+endif()
+set(HAVE_LIVOX_SDK ${LIVOX_INCLUDE_DIR})
 
 include_directories(
   include
@@ -40,26 +45,35 @@ include_directories(
   ${UNITREE_SDK_PATH}/include
   ${CYCLONEDDS_PATH}/include
   ${CYCLONEDDS_PATH}/include/ddscxx
-  ${LIVOX_SDK_PATH}/include
 )
+if(HAVE_LIVOX_SDK)
+  include_directories(${LIVOX_SDK_PATH}/include)
+endif()
 
 link_directories(
   ${UNITREE_SDK_PATH}/lib
   ${CYCLONEDDS_PATH}/lib
-  ${LIVOX_SDK_PATH}/lib
 )
+if(HAVE_LIVOX_SDK)
+  link_directories(${LIVOX_SDK_PATH}/lib)
+endif()
 
-# --- Livox Bridge Node ---
-add_executable(livox_bridge_node
-  src/livox_bridge_node.cpp
-)
-ament_target_dependencies(livox_bridge_node
-  rclcpp sensor_msgs geometry_msgs tf2 tf2_ros
-)
-target_link_libraries(livox_bridge_node
-  livox_lidar_sdk_shared
-  Eigen3::Eigen
-)
+# --- Livox Bridge Node (only when Livox SDK is available) ---
+if(HAVE_LIVOX_SDK)
+  add_executable(livox_bridge_node
+    src/livox_bridge_node.cpp
+  )
+  ament_target_dependencies(livox_bridge_node
+    rclcpp sensor_msgs geometry_msgs tf2 tf2_ros
+  )
+  target_link_libraries(livox_bridge_node
+    livox_lidar_sdk_shared
+    Eigen3::Eigen
+  )
+  list(APPEND G1_SENSOR_BRIDGE_TARGETS livox_bridge_node)
+else()
+  message(STATUS "Livox SDK not found: livox_bridge_node will not be built")
+endif()
 
 # --- Unitree Bridge Node ---
 add_executable(unitree_bridge_node
@@ -86,10 +100,9 @@ target_link_libraries(leg_odometry_node
   Eigen3::Eigen
 )
 
+list(APPEND G1_SENSOR_BRIDGE_TARGETS unitree_bridge_node leg_odometry_node)
 install(TARGETS
-  livox_bridge_node
-  unitree_bridge_node
-  leg_odometry_node
+  ${G1_SENSOR_BRIDGE_TARGETS}
   DESTINATION lib/${PROJECT_NAME}
 )
 
