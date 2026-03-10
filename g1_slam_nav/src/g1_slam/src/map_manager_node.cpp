@@ -12,6 +12,7 @@
 #include <mutex>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 namespace g1_slam {
 
@@ -88,39 +89,57 @@ private:
         std::string grid_path = map_directory_ + "/" + name + "_grid.pgm";
         std::string yaml_path = map_directory_ + "/" + name + ".yaml";
 
-        try {
-            // Save point cloud map
-            {
-                std::lock_guard<std::mutex> lock(map_mutex_);
-                if (!has_map_) {
-                    response->success = false;
-                    response->message = "No point cloud map available";
-                    return;
-                }
-                pcl::PointCloud<pcl::PointXYZ> cloud;
-                pcl::fromROSMsg(latest_map_, cloud);
-                pcl::io::savePCDFileBinary(pcd_path, cloud);
+        sensor_msgs::msg::PointCloud2 map_copy;
+        nav_msgs::msg::OccupancyGrid grid_copy;
+        bool has_grid_copy = false;
+
+        {
+            std::lock_guard<std::mutex> lock(map_mutex_);
+            if (!has_map_) {
+                response->success = false;
+                response->message = "No point cloud map available";
+                return;
             }
-
-            // Save occupancy grid as PGM + YAML
-            {
-                std::lock_guard<std::mutex> lock(grid_mutex_);
-                if (has_grid_) {
-                    saveOccupancyGridPGM(latest_grid_, grid_path);
-                    saveOccupancyGridYAML(latest_grid_, yaml_path, name + "_grid.pgm");
-                }
-            }
-
-            response->success = true;
-            response->message = "Map saved successfully";
-            response->filepath = pcd_path;
-            RCLCPP_INFO(get_logger(), "Map saved: %s", pcd_path.c_str());
-
-        } catch (const std::exception& e) {
-            response->success = false;
-            response->message = std::string("Save failed: ") + e.what();
-            RCLCPP_ERROR(get_logger(), "Map save failed: %s", e.what());
+            map_copy = latest_map_;
         }
+        {
+            std::lock_guard<std::mutex> lock(grid_mutex_);
+            has_grid_copy = has_grid_;
+            if (has_grid_copy) {
+                grid_copy = latest_grid_;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(save_mutex_);
+            if (save_in_progress_) {
+                response->success = false;
+                response->message = "Save already in progress. Trigger dropped.";
+                response->filepath = "";
+                return;
+            }
+            save_in_progress_ = true;
+        }
+
+        std::thread([this, map_copy, grid_copy, has_grid_copy, pcd_path, grid_path, yaml_path]() {
+            try {
+                pcl::PointCloud<pcl::PointXYZ> cloud;
+                pcl::fromROSMsg(map_copy, cloud);
+                pcl::io::savePCDFileBinary(pcd_path, cloud);
+                if (has_grid_copy) {
+                    saveOccupancyGridPGM(grid_copy, grid_path);
+                    saveOccupancyGridYAML(grid_copy, yaml_path, std::filesystem::path(grid_path).filename().string());
+                }
+                RCLCPP_INFO(get_logger(), "Map saved: %s", pcd_path.c_str());
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(get_logger(), "Map save failed: %s", e.what());
+            }
+            std::lock_guard<std::mutex> lock(save_mutex_);
+            save_in_progress_ = false;
+        }).detach();
+
+        response->success = true;
+        response->message = "Save started";
+        response->filepath = pcd_path;
     }
 
     void loadMapCallback(
@@ -208,6 +227,8 @@ private:
     sensor_msgs::msg::PointCloud2 latest_map_;
     nav_msgs::msg::OccupancyGrid latest_grid_;
     std::mutex map_mutex_, grid_mutex_;
+    std::mutex save_mutex_;
+    bool save_in_progress_ = false;
     bool has_map_ = false, has_grid_ = false;
 
     std::string map_directory_;

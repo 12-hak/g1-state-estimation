@@ -4,7 +4,7 @@ import { OrbitControls } from '@react-three/drei';
 import type { RobotPose, Point } from '../types';
 import { pointZ } from '../types';
 
-const MAX_POINTS = 150000;
+const MAX_POINTS = 100000;
 const VOXEL_M = 0.04;
 
 function heightToRgb(z: number, zMin: number, zMax: number): [number, number, number] {
