@@ -3,9 +3,10 @@
  * Navigation UI deferred.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { MapCanvas, type ScanFrame } from './components/MapCanvas';
 import { NearScan3D } from './components/NearScan3D';
+import { FullMap3D } from './components/FullMap3D';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { RobotPose, WSMessage } from './types';
 
@@ -31,7 +32,24 @@ export const App: React.FC = () => {
   const [trailVersion, setTrailVersion] = useState(0);
   const onTrailUpdate = useCallback(() => setTrailVersion(v => v + 1), []);
 
-  // Rehydrate map state from persisted map after remount so map layer doesn't disappear
+  const pointsFor3D = useMemo(() => {
+    if (mapPoints.length > 0) return mapPoints;
+    const trailPoints = Array.from(trailRef.current.values());
+    if (trailPoints.length > 0) return trailPoints;
+    const out: number[][] = [];
+    const seen = new Set<string>();
+    for (const frame of scanFrames.slice(-2)) {
+      for (const p of frame.points) {
+        if (p.length < 2) continue;
+        const k = `${Number(p[0])},${Number(p[1])},${Number(p[2] ?? 0)}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(p);
+      }
+    }
+    return out;
+  }, [mapPoints, scanFrames, trailVersion]);
+
   useEffect(() => {
     if (mapRef.current.size > 0) {
       setMapPoints(Array.from(mapRef.current.values()));
@@ -77,19 +95,25 @@ export const App: React.FC = () => {
       width: '100vw',
       height: '100vh',
       overflow: 'hidden',
-      position: 'relative',
+      display: 'flex',
+      flexDirection: 'row',
       background: '#000',
     }}>
-      <MapCanvas
-        pose={pose}
-        mapPoints={mapPoints}
-        scanFrames={scanFrames}
-        trajectory={trajectory}
-        trailRef={trailRef}
-        trailVersion={trailVersion}
-        onTrailUpdate={onTrailUpdate}
-      />
-      <NearScan3D scanFrames={scanFrames} pose={pose} />
+      <div style={{ flex: '1 1 50%', position: 'relative', minWidth: 0, height: '100%' }}>
+        <MapCanvas
+          pose={pose}
+          mapPoints={mapPoints}
+          scanFrames={scanFrames}
+          trajectory={trajectory}
+          trailRef={trailRef}
+          trailVersion={trailVersion}
+          onTrailUpdate={onTrailUpdate}
+        />
+        <NearScan3D scanFrames={scanFrames} pose={pose} />
+      </div>
+      <div style={{ flex: '1 1 50%', minWidth: 0, position: 'relative', height: '100%' }}>
+        <FullMap3D points={pointsFor3D} pose={pose} />
+      </div>
       <div style={{
         position: 'absolute',
         top: 8,
@@ -100,6 +124,8 @@ export const App: React.FC = () => {
         color: '#aaa',
         fontSize: 12,
         fontFamily: 'sans-serif',
+        zIndex: 20,
+        pointerEvents: 'none',
       }}>
         <span style={{
           width: 8,

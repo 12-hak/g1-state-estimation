@@ -19,6 +19,9 @@ const TRAIL_Z_MIN = 0.1;
 const TRAIL_Z_MAX = 2.0;
 /** Trail cell colour — visible but not dominant. */
 const TRAIL_COLOR = 'rgba(80, 140, 200, 0.7)';
+/** 3D trail: cap then compact to coarser voxel so we keep building without unbounded growth. */
+const TRAIL_3D_MAX = 150000;
+const TRAIL_3D_VOXEL_INIT = 0.04;
 
 function heightToColor(z: number, zMin: number, zMax: number): string {
   if (zMax <= zMin) return 'rgba(200,200,200,0.85)';
@@ -129,6 +132,7 @@ export const MapCanvas: React.FC<Props> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasCenteredRef = useRef(false);
+  const trailVoxelRef = useRef(TRAIL_3D_VOXEL_INIT);
   const [view, setView] = useState({ offsetX: 0, offsetY: 0, scale: 80, angle: 0 });
   const dragRef = useRef<{ pan: boolean; rotate: boolean; didDrag: boolean; lastX: number; lastY: number }>({ pan: false, rotate: false, didDrag: false, lastX: 0, lastY: 0 });
 
@@ -205,18 +209,35 @@ export const MapCanvas: React.FC<Props> = ({
       }
     }
 
-    // Also feed through to the 3D trail ref for near-scan voxel use
     const trail = trailRef.current;
-    const v = 0.03; // TRAIL_VOXEL_M
-    for (const frame of scanFrames) {
-      for (const p of frame.points) {
-        if (p.length < 2) continue;
-        const x = p.length >= 1 ? Number(p[0]) : 0;
-        const y = p.length >= 2 ? Number(p[1]) : 0;
-        const z = p.length >= 3 ? Number(p[2]) : 0;
-        const tk = `${Math.floor(x / v)} ${Math.floor(y / v)} ${Math.floor(z / v)}`;
-        if (!trail.has(tk)) { trail.set(tk, [...p]); added++; }
+    let v = trailVoxelRef.current;
+    if (trail.size < TRAIL_3D_MAX) {
+      for (const frame of scanFrames) {
+        for (const p of frame.points) {
+          if (p.length < 2) continue;
+          const x = Number(p[0] ?? 0), y = Number(p[1] ?? 0), z = Number(p[2] ?? 0);
+          const tk = `${Math.floor(x / v)} ${Math.floor(y / v)} ${Math.floor(z / v)}`;
+          if (!trail.has(tk)) {
+            trail.set(tk, [...p]);
+            added++;
+            if (trail.size >= TRAIL_3D_MAX) break;
+          }
+        }
+        if (trail.size >= TRAIL_3D_MAX) break;
       }
+    }
+    if (trail.size >= TRAIL_3D_MAX) {
+      const newVoxel = v * 2;
+      const compact = new Map<string, number[]>();
+      for (const [, p] of trail) {
+        const x = Number(p[0] ?? 0), y = Number(p[1] ?? 0), z = Number(p[2] ?? 0);
+        const ck = `${Math.floor(x / newVoxel)} ${Math.floor(y / newVoxel)} ${Math.floor(z / newVoxel)}`;
+        if (!compact.has(ck)) compact.set(ck, [...p]);
+      }
+      trail.clear();
+      for (const [k, val] of compact) trail.set(k, val);
+      trailVoxelRef.current = newVoxel;
+      added++;
     }
 
     if (added > 0 || nearScanCells.size > 0) {

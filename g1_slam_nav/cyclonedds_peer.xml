@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cyclone DDS: peer so this host finds the other and data flows. -->
+<!-- Use on BOTH Jetson and PC; set PEER_IP to the other machine's IP. -->
+<!-- Example: PEER_IP=192.168.1.100 export CYCLONEDDS_URI=file:///path/to/cyclonedds_peer.xml -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <Discovery>
+      <Peers>
+        <Peer Address="192.168.1.126"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
