@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { MapCanvas, type ScanFrame } from './components/MapCanvas';
-import { NearScan3D } from './components/NearScan3D';
 import { FullMap3D } from './components/FullMap3D';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { RobotPose, WSMessage } from './types';
@@ -14,10 +13,10 @@ const WS_PORT = (import.meta as any).env?.VITE_WS_PORT ?? '9090';
 const WS_URL = `ws://${window.location.hostname}:${WS_PORT}`;
 /** Max scan frames to keep in memory (trail is persistent, no time decay). */
 const SCAN_FRAMES_MAX = 120;
+const RIGHT_WINDOW_POINTS = 100000;
 /** Voxel size (m) for accumulating map layer so it never decays. */
 const MAP_VOXEL_M = 0.025;
-const BUILD_TARGET_POINTS = 100000;
-const BUILD_LIVE_SAVE_NAME = 'build_live';
+const SAVE_MAP_NAME = 'save_map';
 
 // Persist accumulated clouds outside React so they survive remounts (Strict Mode, HMR, etc.)
 const persistedMap = new Map<string, number[]>();
@@ -28,34 +27,22 @@ export const App: React.FC = () => {
   const [pose, setPose] = useState<RobotPose | null>(null);
   const [mapPoints, setMapPoints] = useState<number[][]>([]);
   const [scanFrames, setScanFrames] = useState<ScanFrame[]>([]);
+  const [rollingPoints, setRollingPoints] = useState<number[][]>([]);
   const [trajectory, setTrajectory] = useState<number[][]>([]);
-  const [buildMode, setBuildMode] = useState(false);
-  const [buildPoints, setBuildPoints] = useState<number[][]>([]);
-  const [buildSaveCount, setBuildSaveCount] = useState(0);
+  const [saveCount, setSaveCount] = useState(0);
+  const [saveBusy, setSaveBusy] = useState(false);
   const trailRef = useRef(persistedTrail);
   const mapRef = useRef(persistedMap);
-  const saveCooldownRef = useRef(false);
   const [trailVersion, setTrailVersion] = useState(0);
   const onTrailUpdate = useCallback(() => setTrailVersion(v => v + 1), []);
 
   const pointsFor3D = useMemo(() => {
-    if (buildMode) return buildPoints;
-    if (mapPoints.length > 0) return mapPoints;
+    if (rollingPoints.length > 0) return rollingPoints;
     const trailPoints = Array.from(trailRef.current.values());
-    if (trailPoints.length > 0) return trailPoints;
-    const out: number[][] = [];
-    const seen = new Set<string>();
-    for (const frame of scanFrames.slice(-2)) {
-      for (const p of frame.points) {
-        if (p.length < 2) continue;
-        const k = `${Number(p[0])},${Number(p[1])},${Number(p[2] ?? 0)}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        out.push(p);
-      }
-    }
-    return out;
-  }, [buildMode, buildPoints, mapPoints, scanFrames, trailVersion]);
+    if (trailPoints.length > 0) return trailPoints.slice(-RIGHT_WINDOW_POINTS);
+    if (mapPoints.length > 0) return mapPoints.slice(-RIGHT_WINDOW_POINTS);
+    return [];
+  }, [rollingPoints, trailVersion, mapPoints]);
 
   useEffect(() => {
     if (mapRef.current.size > 0) {
@@ -68,29 +55,16 @@ export const App: React.FC = () => {
       if (data.type === 'pose') {
         setPose({ x: data.x, y: data.y, z: data.z, yaw: data.yaw });
       } else if (data.type === 'status') {
+        const incoming = (data.scan_points ?? []).filter((p: number[]) => p.length >= 2);
         setScanFrames(prev => {
           const next = [...prev, { points: data.scan_points, receivedAt: Date.now() }];
           return next.slice(-SCAN_FRAMES_MAX);
         });
-        if (buildMode) {
-          const incoming = (data.scan_points ?? []).filter((p: number[]) => p.length >= 2);
-          const reachedTarget = buildPoints.length + incoming.length >= BUILD_TARGET_POINTS;
-          setBuildPoints(prev => {
-            if (incoming.length === 0) return prev;
+        if (incoming.length > 0) {
+          setRollingPoints(prev => {
             const next = [...prev, ...incoming];
-            return next.length > BUILD_TARGET_POINTS ? next.slice(-BUILD_TARGET_POINTS) : next;
+            return next.length > RIGHT_WINDOW_POINTS ? next.slice(-RIGHT_WINDOW_POINTS) : next;
           });
-          if (reachedTarget && !saveCooldownRef.current) {
-            saveCooldownRef.current = true;
-            setBuildSaveCount(prev => prev + 1);
-            send({
-              type: 'save_map',
-              name: BUILD_LIVE_SAVE_NAME,
-            });
-            setTimeout(() => {
-              saveCooldownRef.current = false;
-            }, 5000);
-          }
         }
       } else if (data.type === 'map_cloud') {
         const map = mapRef.current;
@@ -115,19 +89,18 @@ export const App: React.FC = () => {
         setTrajectory(data.trajectory);
       }
     });
-  }, [buildMode, buildPoints.length, onMessage, send]);
+  }, [onMessage]);
 
-  const toggleBuildMode = useCallback(() => {
-    setBuildMode(prev => {
-      const next = !prev;
-      if (!next) {
-        setBuildPoints([]);
-      } else {
-        setBuildSaveCount(0);
-      }
-      return next;
+  const onSaveMap = useCallback(() => {
+    if (saveBusy) return;
+    setSaveBusy(true);
+    send({
+      type: 'save_map',
+      name: SAVE_MAP_NAME,
     });
-  }, []);
+    setSaveCount(v => v + 1);
+    setTimeout(() => setSaveBusy(false), 2500);
+  }, [saveBusy, send]);
 
   return (
     <div style={{
@@ -148,7 +121,6 @@ export const App: React.FC = () => {
           trailVersion={trailVersion}
           onTrailUpdate={onTrailUpdate}
         />
-        <NearScan3D scanFrames={scanFrames} pose={pose} />
       </div>
       <div style={{ flex: '1 1 50%', minWidth: 0, position: 'relative', height: '100%' }}>
         <FullMap3D points={pointsFor3D} pose={pose} />
@@ -163,9 +135,9 @@ export const App: React.FC = () => {
         zIndex: 30,
       }}>
         <button
-          onClick={toggleBuildMode}
+          onClick={onSaveMap}
           style={{
-            background: buildMode ? '#00aa44' : '#333',
+            background: saveBusy ? '#555' : '#0f3460',
             color: '#fff',
             border: 'none',
             borderRadius: 4,
@@ -174,10 +146,10 @@ export const App: React.FC = () => {
             cursor: 'pointer',
           }}
         >
-          Build Mode: {buildMode ? 'ON' : 'OFF'}
+          Save Map
         </button>
         <span style={{ color: '#aaa', fontSize: 12, fontFamily: 'sans-serif' }}>
-          window: {buildPoints.length.toLocaleString()} / {BUILD_TARGET_POINTS.toLocaleString()} · saves: {buildSaveCount} · file: {BUILD_LIVE_SAVE_NAME}
+          right window: {pointsFor3D.length.toLocaleString()} / {RIGHT_WINDOW_POINTS.toLocaleString()} · saves: {saveCount} · file: {SAVE_MAP_NAME}
         </span>
       </div>
       <div style={{

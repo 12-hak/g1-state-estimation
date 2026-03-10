@@ -50,11 +50,15 @@ function FullMapPointCloud({ points, pose }: { points: Point[]; pose: RobotPose 
       if (sampled.length >= MAX_POINTS) break;
     }
     if (zMax <= zMin) zMax = zMin + 1;
-    for (const p of sampled) {
+    const n = sampled.length;
+    for (let i = 0; i < n; i++) {
+      const p = sampled[i];
       const px = Number(p[0] ?? 0), py = Number(p[1] ?? 0), pz = Number(p[2] ?? 0);
       pos.push(px - cx, py - cy, pz - cz);
       const [r, g, b] = heightToRgb(pz, zMin, zMax);
-      col.push(r, g, b);
+      // Age fade: newer points stay bright, older points dim.
+      const fade = n > 1 ? (0.25 + 0.75 * (i / (n - 1))) : 1.0;
+      col.push(r * fade, g * fade, b * fade);
     }
     return {
       positions: new Float32Array(pos),

@@ -61,8 +61,8 @@ def generate_launch_description():
         description='Launch web interface (pointcloud, path, trajectory) at http://<robot-ip>:8080'
     )
     use_occ_grid_arg = DeclareLaunchArgument(
-        'use_occ_grid', default_value='false',
-        description='Run Point-LIO occupancy grid node (Laser_map -> /map for Nav2).'
+        'use_occ_grid', default_value='true',
+        description='Run Point-LIO occupancy grid node (Laser_map -> /map for Nav2). Enables grid PGM+YAML on Save Map.'
     )
 
     prefix = get_package_prefix('g1_bringup')

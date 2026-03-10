@@ -129,7 +129,8 @@ private:
                     saveOccupancyGridPGM(grid_copy, grid_path);
                     saveOccupancyGridYAML(grid_copy, yaml_path, std::filesystem::path(grid_path).filename().string());
                 }
-                RCLCPP_INFO(get_logger(), "Map saved: %s", pcd_path.c_str());
+                RCLCPP_INFO(get_logger(), "Map saved: %s (%zu points)%s",
+                    pcd_path.c_str(), cloud.size(), has_grid_copy ? " + grid" : "");
             } catch (const std::exception& e) {
                 RCLCPP_ERROR(get_logger(), "Map save failed: %s", e.what());
             }
